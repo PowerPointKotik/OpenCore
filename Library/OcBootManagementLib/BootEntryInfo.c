@@ -756,8 +756,8 @@ InternalDescribeBootEntry (
     }
   }
 
-if (BootEntry->Type == OC_BOOT_WINDOWS) && (BootEntry->Name == NULL)) {
-    BootEntry->Name = AllocateCopyPool (sizeof (L"Windows"), L"Windows");
+  if ((BootEntry->Type == OC_BOOT_WINDOWS) && (BootEntry->Name == NULL)) {
+  BootEntry->Name = AllocateCopyPool (sizeof (L"Windows"), L"Windows");
   }
 
   // TODO: Should macOS installer have own OC_BOOT_ENTRY_TYPE (plus own voiceover file?)?
