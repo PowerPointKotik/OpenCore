@@ -35,9 +35,9 @@
 STATIC
 EFI_STATUS
 InternalAddBootEntryFromIAPhysicalMedia (
-  IN OUT OC_BOOT_CONTEXT  *BootContext,
-  IN OUT OC_BOOT_FILESYSTEM  *FileSystem
-  );
+   IN OUT OC_BOOT_CONTEXT     *BootContext,
+   IN OUT OC_BOOT_FILESYSTEM  *FileSystem
+   );
 
 /*
    Expands DevicePath from short-form to full-form.
@@ -2644,22 +2644,22 @@ OcLoadBootEntry (
   @retval EFI_NOT_FOUND if .IAPhysicalMedia marker was not found.
 **/
 STATIC
-EFI_STATUS
-InternalAddBootEntryFromIAPhysicalMedia (
-  IN OUT OC_BOOT_CONTEXT  *BootContext,
-  IN OUT OC_BOOT_FILESYSTEM  *FileSystem
-  )
-{
-  EFI_STATUS                Status;
-  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FsProtocol;
-  EFI_FILE_PROTOCOL                *RootDir;
-  EFI_FILE_PROTOCOL                *MarkerFile;
+ EFI_STATUS
+ InternalAddBootEntryFromIAPhysicalMedia (
+   IN OUT OC_BOOT_CONTEXT     *BootContext,
+   IN OUT OC_BOOT_FILESYSTEM  *FileSystem
+   )
+ {
+   EFI_STATUS                       Status;
+   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FsProtocol;
+   EFI_FILE_PROTOCOL                *RootDir;
+   EFI_FILE_PROTOCOL                *MarkerFile;
 
-  Status = gBS->HandleProtocol (
-                   FileSystem->Handle,
-                   &gEfiSimpleFileSystemProtocolGuid,
-                   (VOID **)&FsProtocol
-                   );
+   Status = gBS->HandleProtocol (
+                  FileSystem->Handle,
+                  &gEfiSimpleFileSystemProtocolGuid,
+                  (VOID **)&FsProtocol
+                  );
 
   if (EFI_ERROR (Status)) {
     return Status;
