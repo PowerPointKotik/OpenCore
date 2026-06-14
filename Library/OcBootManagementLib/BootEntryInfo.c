@@ -756,21 +756,21 @@ InternalDescribeBootEntry (
     }
   }
 
-  if ((BootEntry->Type == OC_BOOT_WINDOWS) && (BootEntry->Name == NULL)) {
+if (BootEntry->Type == OC_BOOT_WINDOWS) && (BootEntry->Name == NULL)) {
     BootEntry->Name = AllocateCopyPool (sizeof (L"Windows"), L"Windows");
   }
 
-// TODO: Should macOS installer have own OC_BOOT_ENTRY_TYPE (plus own voiceover file?)?
-   // Check for macOS installer paths - covers both traditional and macOS 27+ (Golden Gate) installers
-   // Traditional: com.apple.installer, macOS 27+: com.apple.MobileAsset (matches com_apple_MobileAsset*)
-   // NOTE: The underscore version is used in SharedSupport, the dot version in CoreServices
-   // macOS 27 Golden Gate Beta uses .IAPhysicalMedia marker instead of boot.efi
-   DEBUG ((DEBUG_INFO, "OCB: Checking installer path in: %s\n", BootDirectoryName));
-   BootEntry->IsAppleInstaller = (StrStr (BootDirectoryName, L"com.apple.installer") != NULL)
-                                 || (StrStr (BootDirectoryName, L"com.apple.MobileAsset") != NULL)
-                                 || (StrStr (BootDirectoryName, L"com_apple_MobileAsset") != NULL)
-                                 || (StrStr (BootDirectoryName, L".IAPhysicalMedia") != NULL);
-   DEBUG ((DEBUG_INFO, "OCB: IsAppleInstaller = %d (installer path check)\n", BootEntry->IsAppleInstaller));
+  // TODO: Should macOS installer have own OC_BOOT_ENTRY_TYPE (plus own voiceover file?)?
+  // Check for macOS installer paths - covers both traditional and macOS 27+ (Golden Gate) installers
+  // Traditional: com.apple.installer, macOS 27+: com.apple.MobileAsset (matches com_apple_MobileAsset*)
+  // NOTE: The underscore version is used in SharedSupport, the dot version in CoreServices
+  // macOS 27 Golden Gate Beta uses .IAPhysicalMedia marker instead of boot.efi
+  DEBUG ((DEBUG_INFO, "OCB: Checking installer path in: %s\n", BootDirectoryName));
+  BootEntry->IsAppleInstaller = (StrStr (BootDirectoryName, L"com.apple.installer") != NULL)
+                                || (StrStr (BootDirectoryName, L"com.apple.MobileAsset") != NULL)
+                                || (StrStr (BootDirectoryName, L"com_apple_MobileAsset") != NULL)
+                                || (StrStr (BootDirectoryName, L".IAPhysicalMedia") != NULL);
+  DEBUG ((DEBUG_INFO, "OCB: IsAppleInstaller = %d (installer path check)\n", BootEntry->IsAppleInstaller));
   if (BootEntry->Name == NULL) {
     //
     // Special case - installer should be clearly identified to end users but does not normally
