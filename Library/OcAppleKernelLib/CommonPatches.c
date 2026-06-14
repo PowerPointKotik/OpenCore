@@ -14,7 +14,7 @@ WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
 
 #include <Base.h>
 
-#include <IndustryStandard/AppleIntelCpuInfo.h>
+#include <Apple/IndustryStandard/AppleIntelCpuInfo.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/OcDebugLogLib.h>
 #include <Library/OcAppleKernelLib.h>
