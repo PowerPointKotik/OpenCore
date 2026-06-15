@@ -34,3 +34,4 @@ exclude_list:
   # Standalone build compatibility headers
   - Include/Register/Cpuid.h
   - Include/Intel/IndustryStandard/Cpuid.h
+  - Include/Intel/IndustryStandard/AppleIntelCpuInfo.h
