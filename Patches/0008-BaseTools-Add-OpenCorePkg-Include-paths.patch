@@ -3,12 +3,14 @@ From: dstatstrussia
 Date: Mon Jun 15 00:00:00 2026 +0000
 Subject: [PATCH] BaseTools: Add OpenCorePkg Include paths for shared object builds
 
-Add OpenCorePkg/Include/Intel and OpenCorePkg/Include/Apple to the include
-paths for BaseTools shared object compilation. This is needed for OcCpuLib.h
-to find AppleIntelCpuInfo.h definitions via the Intel/IndustryStandard path.
+ Add OpenCorePkg/Include path to enable include resolution for
+ standalone builds. This is needed for OcCpuLib.h to find
+ AppleIntelCpuInfo.h and Cpuid.h definitions.
 
-Signed-off-by: dstatstrussia
+ Signed-off-by: dstatstrussia
 ---
+ BaseTools/Source/C/Makefiles/header.makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/BaseTools/Source/C/Makefiles/header.makefile b/BaseTools/Source/C/Makefiles/header.makefile
 index 7a41a79..8eb0431 100644
@@ -19,6 +21,9 @@ index 7a41a79..8eb0431 100644
  INCLUDE = $(TOOL_INCLUDE) -I $(MAKEROOT) -I $(MAKEROOT)/Include/Common -I $(MAKEROOT)/Include/ -I $(MAKEROOT)/Include/IndustryStandard -I $(MAKEROOT)/Common/ -I .. -I . $(ARCH_INCLUDE)
  
 -INCLUDE += -I $(EDK2_PATH)/MdePkg/Include/ -I $(EDK2_PATH)/MdeModulePkg/Include/ -I $(EDK2_PATH)/OpenCorePkg/User/Include
-+INCLUDE += -I $(EDK2_PATH)/MdePkg/Include/ -I $(EDK2_PATH)/MdeModulePkg/Include/ -I $(EDK2_PATH)/OpenCorePkg/User/Include -I $(EDK2_PATH)/OpenCorePkg/Include/Intel -I $(EDK2_PATH)/OpenCorePkg/Include/Apple -I $(EDK2_PATH)/OpenCorePkg/Include/Acidanthera
++INCLUDE += -I $(EDK2_PATH)/MdePkg/Include/ -I $(EDK2_PATH)/MdeModulePkg/Include/ -I $(EDK2_PATH)/OpenCorePkg/User/Include -I $(EDK2_PATH)/OpenCorePkg/Include
  
  EDK2_INCLUDE = -include $(MAKEROOT)/Include/Common/AutoGen.h
+
+-- 
+2.24.3 (Apple Git-128)
