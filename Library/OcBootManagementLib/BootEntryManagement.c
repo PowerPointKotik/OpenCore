@@ -35,9 +35,9 @@
 STATIC
 EFI_STATUS
 InternalAddBootEntryFromIAPhysicalMedia (
-   IN OUT OC_BOOT_CONTEXT     *BootContext,
-   IN OUT OC_BOOT_FILESYSTEM  *FileSystem
-   );
+  IN OUT OC_BOOT_CONTEXT     *BootContext,
+  IN OUT OC_BOOT_FILESYSTEM  *FileSystem
+  );
 
 /*
    Expands DevicePath from short-form to full-form.
@@ -2644,18 +2644,18 @@ OcLoadBootEntry (
   @retval EFI_NOT_FOUND if .IAPhysicalMedia marker was not found.
 **/
 STATIC
- EFI_STATUS
- InternalAddBootEntryFromIAPhysicalMedia (
-   IN OUT OC_BOOT_CONTEXT     *BootContext,
-   IN OUT OC_BOOT_FILESYSTEM  *FileSystem
-   )
- {
-   EFI_STATUS                       Status;
-   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FsProtocol;
-   EFI_FILE_PROTOCOL                *RootDir;
-   EFI_FILE_PROTOCOL                *MarkerFile;
+EFI_STATUS
+InternalAddBootEntryFromIAPhysicalMedia (
+  IN OUT OC_BOOT_CONTEXT     *BootContext,
+  IN OUT OC_BOOT_FILESYSTEM  *FileSystem
+  )
+{
+  EFI_STATUS                       Status;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FsProtocol;
+  EFI_FILE_PROTOCOL                *RootDir;
+  EFI_FILE_PROTOCOL                *MarkerFile;
 
-   Status = gBS->HandleProtocol (
+  Status = gBS->HandleProtocol (
                   FileSystem->Handle,
                   &gEfiSimpleFileSystemProtocolGuid,
                   (VOID **)&FsProtocol
@@ -2685,11 +2685,11 @@ STATIC
     OC_BOOT_ENTRY  *BootEntry;
     BootEntry = AllocateZeroPool (sizeof (*BootEntry));
     if (BootEntry != NULL) {
-      BootEntry->Id       = AllocateCopyPool (AsciiStrSize ("macOS-Installer-GoldenGate"), "macOS-Installer-GoldenGate");
-      BootEntry->Name     = AllocateCopyPool (L_STR_SIZE (L"macOS 27 Beta Installer"), L"macOS 27 Beta Installer");
-      BootEntry->Type     = OC_BOOT_APPLE_OS;
+      BootEntry->Id               = AllocateCopyPool (AsciiStrSize ("macOS-Installer-GoldenGate"), "macOS-Installer-GoldenGate");
+      BootEntry->Name             = AllocateCopyPool (L_STR_SIZE (L"macOS 27 Beta Installer"), L"macOS 27 Beta Installer");
+      BootEntry->Type             = OC_BOOT_APPLE_OS;
       BootEntry->IsAppleInstaller = TRUE;
-      BootEntry->IsExternal = FileSystem->External;
+      BootEntry->IsExternal       = FileSystem->External;
       InsertTailList (&FileSystem->BootEntries, &BootEntry->Link);
       ++BootContext->BootEntryCount;
       RootDir->Close (RootDir);

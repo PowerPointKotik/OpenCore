@@ -8,4 +8,3 @@
 #include <Uefi.h>
 
 #endif // EFI_FRAMEWORK_MP_SERVICE_PROTOCOL_H
-

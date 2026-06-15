@@ -913,13 +913,14 @@ OcBootPolicyGetBootFile (
   // SharedSupport is mounted separately
   //
   EFI_FILE_PROTOCOL  *MarkerFile;
+
   Status = Root->Open (
-                    Root,
-                    &MarkerFile,
-                    L"\\.IAPhysicalMedia",
-                    EFI_FILE_MODE_READ,
-                    0
-                    );
+                   Root,
+                   &MarkerFile,
+                   L"\\.IAPhysicalMedia",
+                   EFI_FILE_MODE_READ,
+                   0
+                   );
   if (!EFI_ERROR (Status)) {
     MarkerFile->Close (MarkerFile);
     DEBUG ((DEBUG_INFO, "OCBP: macOS 27 Golden Gate installer detected via .IAPhysicalMedia\n"));
