@@ -13,12 +13,16 @@ Signed-off-by: dstatstrussia
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/Source/C/Makefiles/header.makefile b/Source/C/Makefiles/header.makefile
+index ab06e2833c..301335c967 100644
 --- a/Source/C/Makefiles/header.makefile
 +++ b/Source/C/Makefiles/header.makefile
 @@ -153,7 +153,7 @@ endif
+ 
  INCLUDE = $(TOOL_INCLUDE) -I $(MAKEROOT) -I $(MAKEROOT)/Include/Common -I $(MAKEROOT)/Include/ -I $(MAKEROOT)/Include/IndustryStandard -I $(MAKEROOT)/Common/ -I .. -I . $(ARCH_INCLUDE)
  
 -INCLUDE += -I $(EDK2_PATH)/MdePkg/Include/ -I $(EDK2_PATH)/MdeModulePkg/Include/ -I $(EDK2_PATH)/OpenCorePkg/User/Include
 +INCLUDE += -I $(EDK2_PATH)/MdePkg/Include/ -I $(EDK2_PATH)/MdeModulePkg/Include/ -I $(EDK2_PATH)/OpenCorePkg/User/Include -I $(EDK2_PATH)/OpenCorePkg/Include/Intel -I $(EDK2_PATH)/OpenCorePkg/Include/Apple -I $(EDK2_PATH)/OpenCorePkg/Include/Acidanthera
  
  EDK2_INCLUDE = -include $(MAKEROOT)/Include/Common/AutoGen.h
+-- 
+2.24.3 (Apple Git-128)
