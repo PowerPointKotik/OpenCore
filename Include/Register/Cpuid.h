@@ -7,6 +7,8 @@
 #ifndef REGISTER_CPUID_H
 #define REGISTER_CPUID_H
 
+#include <Uefi.h>
+
 #pragma pack(push, 1)
 
 ///
