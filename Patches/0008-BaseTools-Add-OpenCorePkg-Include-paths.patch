@@ -24,5 +24,3 @@ index ab06e2833c..301335c967 100644
 +INCLUDE += -I $(EDK2_PATH)/MdePkg/Include/ -I $(EDK2_PATH)/MdeModulePkg/Include/ -I $(EDK2_PATH)/OpenCorePkg/User/Include -I $(EDK2_PATH)/OpenCorePkg/Include/Intel -I $(EDK2_PATH)/OpenCorePkg/Include/Apple -I $(EDK2_PATH)/OpenCorePkg/Include/Acidanthera
  
  EDK2_INCLUDE = -include $(MAKEROOT)/Include/Common/AutoGen.h
--- 
-2.24.3 (Apple Git-128)
