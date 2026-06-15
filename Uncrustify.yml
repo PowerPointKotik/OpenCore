@@ -31,8 +31,8 @@ exclude_list:
   - User/Library/UserPseudoRandom.c
   - Library/OcDbtLib
   - Platform/OpenDbvX64Dxe
-# Standalone build compatibility headers
-   - Include/Intel/IndustryStandard/AppleIntelCpuInfo.h
-   - Include/IndustryStandard/Cpuid.h
-   - Include/Intel/IndustryStandard/Cpuid.h
-   - Include/Register/Cpuid.h
+  # Standalone build compatibility headers
+  - Include/Intel/IndustryStandard/AppleIntelCpuInfo.h
+  - Include/IndustryStandard/Cpuid.h
+  - Include/Intel/IndustryStandard/Cpuid.h
+  - Include/Register/Cpuid.h
