@@ -60,12 +60,15 @@ updaterepo() {
   if [ "$2" = "UDK" ] && [ "$DISCARD_SUBMODULES" != "" ] && [ ! -f submodules.ready ]; then
     setcommitauthor
     for module_to_discard in "${DISCARD_SUBMODULES[@]}" ; do
-      git rm "${module_to_discard}"
+      rm -rf "${module_to_discard}"
     done
-    git commit -m "Discarded submodules"
     touch submodules.ready
   fi
   git submodule update --init --recommend-shallow || exit 1
+  # Remove any leftover submodule directories after update
+  for module_to_discard in "${DISCARD_SUBMODULES[@]}" ; do
+    rm -rf "${module_to_discard}"
+  done
   popd >/dev/null || exit 1
 }
 
