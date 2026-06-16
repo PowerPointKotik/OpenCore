@@ -25,6 +25,26 @@ jobs:
       HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
        - uses: actions/checkout@v6
+         with:
+           submodules: 'recursive'
+           fetch-depth: 0
+
+       - name: Init git submodules (safety)
+         run: |
+           git submodule sync --recursive || true
+           git submodule update --init --recursive || true
+
+       - name: Ensure UDK from acidanthera/audk
+         run: |
+           UDK_PATH="UDK"
+           if [ -d "$UDK_PATH" ]; then
+             echo "Removing existing $UDK_PATH"
+             rm -rf "$UDK_PATH"
+           fi
+           echo "Cloning acidanthera/audk into $UDK_PATH"
+           git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
+           echo "Listing top of $UDK_PATH:"
+           ls -la "$UDK_PATH" | sed -n '1,40p'
 
        - name: Install Linux Toolchain
          run: |
@@ -62,6 +82,26 @@ jobs:
       TOOLCHAINS: CLANGPDB
     steps:
        - uses: actions/checkout@v6
+         with:
+           submodules: 'recursive'
+           fetch-depth: 0
+
+       - name: Init git submodules (safety)
+         run: |
+           git submodule sync --recursive || true
+           git submodule update --init --recursive || true
+
+       - name: Ensure UDK from acidanthera/audk
+         run: |
+           UDK_PATH="UDK"
+           if [ -d "$UDK_PATH" ]; then
+             echo "Removing existing $UDK_PATH"
+             rm -rf "$UDK_PATH"
+           fi
+           echo "Cloning acidanthera/audk into $UDK_PATH"
+           git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
+           echo "Listing top of $UDK_PATH:"
+           ls -la "$UDK_PATH" | sed -n '1,40p'
 
        - name: Apply Docker AppArmor settings
          run: |
@@ -89,6 +129,26 @@ jobs:
       TOOLCHAINS: GCC
     steps:
        - uses: actions/checkout@v6
+         with:
+           submodules: 'recursive'
+           fetch-depth: 0
+
+       - name: Init git submodules (safety)
+         run: |
+           git submodule sync --recursive || true
+           git submodule update --init --recursive || true
+
+       - name: Ensure UDK from acidanthera/audk
+         run: |
+           UDK_PATH="UDK"
+           if [ -d "$UDK_PATH" ]; then
+             echo "Removing existing $UDK_PATH"
+             rm -rf "$UDK_PATH"
+           fi
+           echo "Cloning acidanthera/audk into $UDK_PATH"
+           git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
+           echo "Listing top of $UDK_PATH:"
+           ls -la "$UDK_PATH" | sed -n '1,40p'
 
        - name: Apply Docker AppArmor settings
          run: |
@@ -116,6 +176,26 @@ jobs:
       TOOLCHAINS: CLANGDWARF
     steps:
        - uses: actions/checkout@v6
+         with:
+           submodules: 'recursive'
+           fetch-depth: 0
+
+       - name: Init git submodules (safety)
+         run: |
+           git submodule sync --recursive || true
+           git submodule update --init --recursive || true
+
+       - name: Ensure UDK from acidanthera/audk
+         run: |
+           UDK_PATH="UDK"
+           if [ -d "$UDK_PATH" ]; then
+             echo "Removing existing $UDK_PATH"
+             rm -rf "$UDK_PATH"
+           fi
+           echo "Cloning acidanthera/audk into $UDK_PATH"
+           git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
+           echo "Listing top of $UDK_PATH:"
+           ls -la "$UDK_PATH" | sed -n '1,40p'
 
        - name: Apply Docker AppArmor settings
          run: |
@@ -141,6 +221,26 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
        - uses: actions/checkout@v6
+         with:
+           submodules: 'recursive'
+           fetch-depth: 0
+
+       - name: Init git submodules (safety)
+         run: |
+           git submodule sync --recursive || true
+           git submodule update --init --recursive || true
+
+       - name: Ensure UDK from acidanthera/audk
+         run: |
+           UDK_PATH="UDK"
+           if [ -d "$UDK_PATH" ]; then
+             echo "Removing existing $UDK_PATH"
+             rm -rf "$UDK_PATH"
+           fi
+           echo "Cloning acidanthera/audk into $UDK_PATH"
+           git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
+           echo "Listing top of $UDK_PATH:"
+           ls -la "$UDK_PATH" | sed -n '1,40p'
 
        - name: Apply Docker AppArmor settings
          run: |
@@ -160,6 +260,26 @@ jobs:
       CC: gcc
     steps:
        - uses: actions/checkout@v6
+         with:
+           submodules: 'recursive'
+           fetch-depth: 0
+
+       - name: Init git submodules (safety)
+         run: |
+           git submodule sync --recursive || true
+           git submodule update --init --recursive || true
+
+       - name: Ensure UDK from acidanthera/audk
+         run: |
+           UDK_PATH="UDK"
+           if [ -d "$UDK_PATH" ]; then
+             echo "Removing existing $UDK_PATH"
+             rm -rf "$UDK_PATH"
+           fi
+           echo "Cloning acidanthera/audk into $UDK_PATH"
+           git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
+           echo "Listing top of $UDK_PATH:"
+           ls -la "$UDK_PATH" | sed -n '1,40p'
 
        - uses: actions/setup-python@v6
          id: python
