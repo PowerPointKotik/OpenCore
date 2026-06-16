@@ -34,30 +34,26 @@ jobs:
            git submodule sync --recursive || true
            git submodule update --init --recursive || true
 
-       - name: Ensure UDK from fork
+       - name: Ensure UDK from acidanthera/audk
          run: |
            UDK_PATH="UDK"
            if [ -d "$UDK_PATH" ]; then
              echo "Removing existing $UDK_PATH"
              rm -rf "$UDK_PATH"
            fi
-           echo "Cloning fork audk into $UDK_PATH"
-           git clone --depth=1 https://github.com/dstatstrussia/audk.git "$UDK_PATH"
-           echo "Creating top-level symlinks for build (MdePkg, MdeModulePkg)"
-           for p in MdePkg MdeModulePkg; do
-             if [ -e "$p" ] || [ -L "$p" ]; then
-               echo "Removing stale $p"
-               rm -rf "$p"
-             fi
-             if [ -d "$UDK_PATH/$p" ]; then
-               ln -s "$UDK_PATH/$p" "$p"
-               echo "Linked $p -> $UDK_PATH/$p"
-             else
-               echo "Warning: $UDK_PATH/$p not found"
-             fi
-           done
-           echo "Listing linked directories:"
-           ls -la MdePkg MdeModulePkg || true
+           echo "Cloning acidanthera/audk into $UDK_PATH"
+           git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
+           echo "Listing top of $UDK_PATH:"
+           ls -la "$UDK_PATH" | sed -n '1,40p'
+
+       - name: Debug: locate AppleIntelCpuInfo.h
+         run: |
+           echo "Search for AppleIntelCpuInfo.h"
+           find . -type f -name "AppleIntelCpuInfo.h" -print || true
+           echo "Search for IndustryStandard directories"
+           find . -type d -name "IndustryStandard" -print || true
+           echo "List UDK top-level"
+           if [ -d "UDK" ]; then ls -la UDK | sed -n '1,80p'; fi
 
        - name: Install Linux Toolchain
          run: |
@@ -104,30 +100,26 @@ jobs:
            git submodule sync --recursive || true
            git submodule update --init --recursive || true
 
-       - name: Ensure UDK from fork
+       - name: Ensure UDK from acidanthera/audk
          run: |
            UDK_PATH="UDK"
            if [ -d "$UDK_PATH" ]; then
              echo "Removing existing $UDK_PATH"
              rm -rf "$UDK_PATH"
            fi
-           echo "Cloning fork audk into $UDK_PATH"
-           git clone --depth=1 https://github.com/dstatstrussia/audk.git "$UDK_PATH"
-           echo "Creating top-level symlinks for build (MdePkg, MdeModulePkg)"
-           for p in MdePkg MdeModulePkg; do
-             if [ -e "$p" ] || [ -L "$p" ]; then
-               echo "Removing stale $p"
-               rm -rf "$p"
-             fi
-             if [ -d "$UDK_PATH/$p" ]; then
-               ln -s "$UDK_PATH/$p" "$p"
-               echo "Linked $p -> $UDK_PATH/$p"
-             else
-               echo "Warning: $UDK_PATH/$p not found"
-             fi
-           done
-           echo "Listing linked directories:"
-           ls -la MdePkg MdeModulePkg || true
+           echo "Cloning acidanthera/audk into $UDK_PATH"
+           git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
+           echo "Listing top of $UDK_PATH:"
+           ls -la "$UDK_PATH" | sed -n '1,40p'
+
+       - name: Debug: locate AppleIntelCpuInfo.h
+         run: |
+           echo "Search for AppleIntelCpuInfo.h"
+           find . -type f -name "AppleIntelCpuInfo.h" -print || true
+           echo "Search for IndustryStandard directories"
+           find . -type d -name "IndustryStandard" -print || true
+           echo "List UDK top-level"
+           if [ -d "UDK" ]; then ls -la UDK | sed -n '1,80p'; fi
 
        - name: Apply Docker AppArmor settings
          run: |
@@ -164,30 +156,26 @@ jobs:
            git submodule sync --recursive || true
            git submodule update --init --recursive || true
 
-       - name: Ensure UDK from fork
+       - name: Ensure UDK from acidanthera/audk
          run: |
            UDK_PATH="UDK"
            if [ -d "$UDK_PATH" ]; then
              echo "Removing existing $UDK_PATH"
              rm -rf "$UDK_PATH"
            fi
-           echo "Cloning fork audk into $UDK_PATH"
-           git clone --depth=1 https://github.com/dstatstrussia/audk.git "$UDK_PATH"
-           echo "Creating top-level symlinks for build (MdePkg, MdeModulePkg)"
-           for p in MdePkg MdeModulePkg; do
-             if [ -e "$p" ] || [ -L "$p" ]; then
-               echo "Removing stale $p"
-               rm -rf "$p"
-             fi
-             if [ -d "$UDK_PATH/$p" ]; then
-               ln -s "$UDK_PATH/$p" "$p"
-               echo "Linked $p -> $UDK_PATH/$p"
-             else
-               echo "Warning: $UDK_PATH/$p not found"
-             fi
-           done
-           echo "Listing linked directories:"
-           ls -la MdePkg MdeModulePkg || true
+           echo "Cloning acidanthera/audk into $UDK_PATH"
+           git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
+           echo "Listing top of $UDK_PATH:"
+           ls -la "$UDK_PATH" | sed -n '1,40p'
+
+       - name: Debug: locate AppleIntelCpuInfo.h
+         run: |
+           echo "Search for AppleIntelCpuInfo.h"
+           find . -type f -name "AppleIntelCpuInfo.h" -print || true
+           echo "Search for IndustryStandard directories"
+           find . -type d -name "IndustryStandard" -print || true
+           echo "List UDK top-level"
+           if [ -d "UDK" ]; then ls -la UDK | sed -n '1,80p'; fi
 
        - name: Apply Docker AppArmor settings
          run: |
@@ -224,30 +212,26 @@ jobs:
            git submodule sync --recursive || true
            git submodule update --init --recursive || true
 
-       - name: Ensure UDK from fork
+       - name: Ensure UDK from acidanthera/audk
          run: |
            UDK_PATH="UDK"
            if [ -d "$UDK_PATH" ]; then
              echo "Removing existing $UDK_PATH"
              rm -rf "$UDK_PATH"
            fi
-           echo "Cloning fork audk into $UDK_PATH"
-           git clone --depth=1 https://github.com/dstatstrussia/audk.git "$UDK_PATH"
-           echo "Creating top-level symlinks for build (MdePkg, MdeModulePkg)"
-           for p in MdePkg MdeModulePkg; do
-             if [ -e "$p" ] || [ -L "$p" ]; then
-               echo "Removing stale $p"
-               rm -rf "$p"
-             fi
-             if [ -d "$UDK_PATH/$p" ]; then
-               ln -s "$UDK_PATH/$p" "$p"
-               echo "Linked $p -> $UDK_PATH/$p"
-             else
-               echo "Warning: $UDK_PATH/$p not found"
-             fi
-           done
-           echo "Listing linked directories:"
-           ls -la MdePkg MdeModulePkg || true
+           echo "Cloning acidanthera/audk into $UDK_PATH"
+           git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
+           echo "Listing top of $UDK_PATH:"
+           ls -la "$UDK_PATH" | sed -n '1,40p'
+
+       - name: Debug: locate AppleIntelCpuInfo.h
+         run: |
+           echo "Search for AppleIntelCpuInfo.h"
+           find . -type f -name "AppleIntelCpuInfo.h" -print || true
+           echo "Search for IndustryStandard directories"
+           find . -type d -name "IndustryStandard" -print || true
+           echo "List UDK top-level"
+           if [ -d "UDK" ]; then ls -la UDK | sed -n '1,80p'; fi
 
        - name: Apply Docker AppArmor settings
          run: |
@@ -282,30 +266,26 @@ jobs:
            git submodule sync --recursive || true
            git submodule update --init --recursive || true
 
-       - name: Ensure UDK from fork
+       - name: Ensure UDK from acidanthera/audk
          run: |
            UDK_PATH="UDK"
            if [ -d "$UDK_PATH" ]; then
              echo "Removing existing $UDK_PATH"
              rm -rf "$UDK_PATH"
            fi
-           echo "Cloning fork audk into $UDK_PATH"
-           git clone --depth=1 https://github.com/dstatstrussia/audk.git "$UDK_PATH"
-           echo "Creating top-level symlinks for build (MdePkg, MdeModulePkg)"
-           for p in MdePkg MdeModulePkg; do
-             if [ -e "$p" ] || [ -L "$p" ]; then
-               echo "Removing stale $p"
-               rm -rf "$p"
-             fi
-             if [ -d "$UDK_PATH/$p" ]; then
-               ln -s "$UDK_PATH/$p" "$p"
-               echo "Linked $p -> $UDK_PATH/$p"
-             else
-               echo "Warning: $UDK_PATH/$p not found"
-             fi
-           done
-           echo "Listing linked directories:"
-           ls -la MdePkg MdeModulePkg || true
+           echo "Cloning acidanthera/audk into $UDK_PATH"
+           git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
+           echo "Listing top of $UDK_PATH:"
+           ls -la "$UDK_PATH" | sed -n '1,40p'
+
+       - name: Debug: locate AppleIntelCpuInfo.h
+         run: |
+           echo "Search for AppleIntelCpuInfo.h"
+           find . -type f -name "AppleIntelCpuInfo.h" -print || true
+           echo "Search for IndustryStandard directories"
+           find . -type d -name "IndustryStandard" -print || true
+           echo "List UDK top-level"
+           if [ -d "UDK" ]; then ls -la UDK | sed -n '1,80p'; fi
 
        - name: Apply Docker AppArmor settings
          run: |
@@ -334,201 +314,27 @@ jobs:
            git submodule sync --recursive || true
            git submodule update --init --recursive || true
 
-       - name: Ensure UDK from fork
+       - name: Ensure UDK from acidanthera/audk
          run: |
            UDK_PATH="UDK"
            if [ -d "$UDK_PATH" ]; then
              echo "Removing existing $UDK_PATH"
              rm -rf "$UDK_PATH"
            fi
-           echo "Cloning fork audk into $UDK_PATH"
-           git clone --depth=1 https://github.com/dstatstrussia/audk.git "$UDK_PATH"
-           echo "Creating top-level symlinks for build (MdePkg, MdeModulePkg)"
-           for p in MdePkg MdeModulePkg; do
-             if [ -e "$p" ] || [ -L "$p" ]; then
-               echo "Removing stale $p"
-               rm -rf "$p"
-             fi
-             if [ -d "$UDK_PATH/$p" ]; then
-               ln -s "$UDK_PATH/$p" "$p"
-               echo "Linked $p -> $UDK_PATH/$p"
-             else
-               echo "Warning: $UDK_PATH/$p not found"
-             fi
-           done
-           echo "Listing linked directories:"
-           ls -la MdePkg MdeModulePkg || true
+           echo "Cloning acidanthera/audk into $UDK_PATH"
+           git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
+           echo "Listing top of $UDK_PATH:"
+           ls -la "$UDK_PATH" | sed -n '1,40p'
 
-       - uses: actions/setup-python@v6
-         id: python
-         with:
-           python-version: '3.x'
-
-       - uses: TheMrMilchmann/setup-msvc-dev@v4
-         with:
-           arch: x86
-
-       - name: Install Dependencies
-         shell: cmd
-         run: |
-           choco install make nasm zip iasl --no-progress
-           "%pythonLocation%\\python.exe" -m pip install setuptools --quiet --force-reinstall
-
-       - name: CI Bootstrap
-         shell: bash
-         env:
-           PYTHON_COMMAND: ${{ steps.python.outputs.python-path }}
-         run: |
-           echo "=== Python detection ==="
-           echo "PYTHON_COMMAND from setup-python: $PYTHON_COMMAND"
-           # Convert bash-style path to Windows if needed (e.g., /c/... -> C:\...)
-           if [[ "$PYTHON_COMMAND" == /c/* ]]; then
-             PYTHON_COMMAND=$(cmd /c "echo ${PYTHON_COMMAND/\/c\//C:\\}" 2>/dev/null | tr -d '\r' || echo "$PYTHON_COMMAND")
-             echo "Converted PYTHON_COMMAND: $PYTHON_COMMAND"
-           fi
-           # Ensure python is in cmd PATH for nmake detection
-           if ! cmd /c 'where python >/dev/null 2>&1' 2>/dev/null; then
-             echo "Adding python to cmd PATH..."
-             PYTHON_CMD_DIR=$(cmd /c 'echo %PYTHON_COMMAND%' 2>/dev/null | tr -d '\r' | sed 's|\\[^\\]*$||')
-             if [ -n "$PYTHON_CMD_DIR" ]; then
-               PYTHON_COMMAND="$PYTHON_CMD_DIR\\python.exe"
-               echo "Adjusted PYTHON_COMMAND: $PYTHON_COMMAND"
-             fi
-           fi
-           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
-           src=$(curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
-
-       - name: Build Duet
+       - name: Debug: locate AppleIntelCpuInfo.h
          shell: bash
          run: |
-           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
-           ./build_duet.tool
-
-       - name: Build OpenCore
-         shell: bash
-         run: |
-           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
-           ./build_oc.tool
-
-       - name: Upload to Artifacts
-         uses: actions/upload-artifact@v6
-         with:
-           name: Windows Artifacts
-           path: Binaries/*.zip
-       - name: Upload to Release
-         if: github.event_name == 'release'
-         uses: svenstaro/upload-release-action@04733e069f2d7f7f0b4aebc4fbdbce8613b03ccd
-         with:
-           repo_token: ${{ secrets.GITHUB_TOKEN }}
-           file: Binaries/*.zip
-           tag: ${{ github.ref }}
-           file_glob: true
-
-  build-linux-clangpdb:
-    name: Linux CLANGPDB
-    runs-on: ubuntu-24.04
-    env:
-      TOOLCHAINS: CLANGPDB
-    steps:
-       - uses: actions/checkout@v6
-
-       - name: Apply Docker AppArmor settings
-         run: |
-           src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
-
-       - name: Use Docker in rootless mode.
-         uses: ScribeMD/rootless-docker@0.2.2
-
-       - name: ./build_duet.tool
-         run: docker compose run build-duet
-
-       - name: ./build_oc.tool
-         run: docker compose run build-oc
-
-       - name: Upload to Artifacts
-         uses: actions/upload-artifact@v6
-         with:
-           name: Linux CLANGPDB Artifacts
-           path: Binaries/*.zip
-
-  build-linux-gcc5:
-    name: Linux GCC
-    runs-on: ubuntu-24.04
-    env:
-      TOOLCHAINS: GCC
-    steps:
-       - uses: actions/checkout@v6
-
-       - name: Apply Docker AppArmor settings
-         run: |
-           src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
-
-       - name: Use Docker in rootless mode.
-         uses: ScribeMD/rootless-docker@0.2.2
-
-       - name: ./build_duet.tool
-         run: docker compose run build-duet
-
-       - name: ./build_oc.tool
-         run: docker compose run build-oc
-
-       - name: Upload to Artifacts
-         uses: actions/upload-artifact@v6
-         with:
-           name: Linux GCC Artifacts
-           path: Binaries/*.zip
-
-  build-linux-clangdwarf:
-    name: Linux CLANGDWARF
-    runs-on: ubuntu-24.04
-    env:
-      TOOLCHAINS: CLANGDWARF
-    steps:
-       - uses: actions/checkout@v6
-
-       - name: Apply Docker AppArmor settings
-         run: |
-           src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
-
-       - name: Use Docker in rootless mode.
-         uses: ScribeMD/rootless-docker@0.2.2
-
-       - name: ./build_duet.tool
-         run: docker compose run build-duet
-
-       - name: ./build_oc.tool
-         run: docker compose run build-oc
-
-       - name: Upload to Artifacts
-         uses: actions/upload-artifact@v6
-         with:
-           name: Linux CLANGDWARF Artifacts
-           path: Binaries/*.zip
-
-  build-linux-docs:
-    name: Linux Docs
-    runs-on: ubuntu-24.04
-    steps:
-       - uses: actions/checkout@v6
-
-       - name: Apply Docker AppArmor settings
-         run: |
-           src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
-
-       - name: Use Docker in rootless mode.
-         uses: ScribeMD/rootless-docker@0.2.2
-
-       - name: Docs
-         run: docker compose run build-docs
-
-  build-windows:
-    name: Windows VS2022
-    runs-on: windows-latest
-    env:
-      HAS_OPENSSL_BUILD: 0
-      CC: gcc
-    steps:
-       - uses: actions/checkout@v6
+           echo "Search for AppleIntelCpuInfo.h"
+           find . -type f -name "AppleIntelCpuInfo.h" -print || true
+           echo "Search for IndustryStandard directories"
+           find . -type d -name "IndustryStandard" -print || true
+           echo "List UDK top-level"
+           if [ -d "UDK" ]; then ls -la UDK | sed -n '1,80p'; fi
 
        - uses: actions/setup-python@v6
          id: python
