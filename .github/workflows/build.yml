@@ -46,6 +46,15 @@ jobs:
            echo "Listing top of $UDK_PATH:"
            ls -la "$UDK_PATH" | sed -n '1,40p'
 
+       - name: Debug: locate AppleIntelCpuInfo.h
+         run: |
+           echo "Search for AppleIntelCpuInfo.h"
+           find . -type f -name "AppleIntelCpuInfo.h" -print || true
+           echo "Search for IndustryStandard directories"
+           find . -type d -name "IndustryStandard" -print || true
+           echo "List UDK top-level"
+           if [ -d "UDK" ]; then ls -la UDK | sed -n '1,80p'; fi
+
        - name: Install Linux Toolchain
          run: |
            brew tap FiloSottile/homebrew-musl-cross
@@ -103,6 +112,15 @@ jobs:
            echo "Listing top of $UDK_PATH:"
            ls -la "$UDK_PATH" | sed -n '1,40p'
 
+       - name: Debug: locate AppleIntelCpuInfo.h
+         run: |
+           echo "Search for AppleIntelCpuInfo.h"
+           find . -type f -name "AppleIntelCpuInfo.h" -print || true
+           echo "Search for IndustryStandard directories"
+           find . -type d -name "IndustryStandard" -print || true
+           echo "List UDK top-level"
+           if [ -d "UDK" ]; then ls -la UDK | sed -n '1,80p'; fi
+
        - name: Apply Docker AppArmor settings
          run: |
            src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
@@ -149,6 +167,15 @@ jobs:
            git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
            echo "Listing top of $UDK_PATH:"
            ls -la "$UDK_PATH" | sed -n '1,40p'
+
+       - name: Debug: locate AppleIntelCpuInfo.h
+         run: |
+           echo "Search for AppleIntelCpuInfo.h"
+           find . -type f -name "AppleIntelCpuInfo.h" -print || true
+           echo "Search for IndustryStandard directories"
+           find . -type d -name "IndustryStandard" -print || true
+           echo "List UDK top-level"
+           if [ -d "UDK" ]; then ls -la UDK | sed -n '1,80p'; fi
 
        - name: Apply Docker AppArmor settings
          run: |
@@ -197,6 +224,15 @@ jobs:
            echo "Listing top of $UDK_PATH:"
            ls -la "$UDK_PATH" | sed -n '1,40p'
 
+       - name: Debug: locate AppleIntelCpuInfo.h
+         run: |
+           echo "Search for AppleIntelCpuInfo.h"
+           find . -type f -name "AppleIntelCpuInfo.h" -print || true
+           echo "Search for IndustryStandard directories"
+           find . -type d -name "IndustryStandard" -print || true
+           echo "List UDK top-level"
+           if [ -d "UDK" ]; then ls -la UDK | sed -n '1,80p'; fi
+
        - name: Apply Docker AppArmor settings
          run: |
            src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
@@ -242,6 +278,15 @@ jobs:
            echo "Listing top of $UDK_PATH:"
            ls -la "$UDK_PATH" | sed -n '1,40p'
 
+       - name: Debug: locate AppleIntelCpuInfo.h
+         run: |
+           echo "Search for AppleIntelCpuInfo.h"
+           find . -type f -name "AppleIntelCpuInfo.h" -print || true
+           echo "Search for IndustryStandard directories"
+           find . -type d -name "IndustryStandard" -print || true
+           echo "List UDK top-level"
+           if [ -d "UDK" ]; then ls -la UDK | sed -n '1,80p'; fi
+
        - name: Apply Docker AppArmor settings
          run: |
            src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
@@ -280,6 +325,16 @@ jobs:
            git clone --depth=1 https://github.com/acidanthera/audk.git "$UDK_PATH"
            echo "Listing top of $UDK_PATH:"
            ls -la "$UDK_PATH" | sed -n '1,40p'
+
+       - name: Debug: locate AppleIntelCpuInfo.h
+         shell: bash
+         run: |
+           echo "Search for AppleIntelCpuInfo.h"
+           find . -type f -name "AppleIntelCpuInfo.h" -print || true
+           echo "Search for IndustryStandard directories"
+           find . -type d -name "IndustryStandard" -print || true
+           echo "List UDK top-level"
+           if [ -d "UDK" ]; then ls -la UDK | sed -n '1,80p'; fi
 
        - uses: actions/setup-python@v6
          id: python
