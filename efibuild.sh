@@ -128,7 +128,8 @@ symlink() {
         cp "${f}" "$2/" || exit 1
       fi
     done
-  elif [ ! -d "$2" ]; then
+  else
+    rm -rf "$2"
     ln -s "$1" "$2" || exit 1
   fi
 }
