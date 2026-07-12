@@ -62,6 +62,7 @@ jobs:
        - name: Install Linux Toolchain
          run: |
            brew tap FiloSottile/homebrew-musl-cross
+           brew trust filosottile/musl-cross
            brew install musl-cross
 
        - name: Install Dependencies
@@ -104,31 +105,6 @@ jobs:
            git submodule sync --recursive || true
            git submodule update --init --recursive || true
 
-       - name: Ensure UDK from dstatstrussia/audk
-         run: |
-           UDK_PATH="UDK"
-           if [ -d "$UDK_PATH" ]; then
-             echo "Removing existing $UDK_PATH"
-             rm -rf "$UDK_PATH"
-           fi
-           echo "Cloning dstatstrussia/audk into $UDK_PATH"
-           git clone --depth=1 https://github.com/dstatstrussia/audk.git "$UDK_PATH"
-            echo "Creating top-level symlinks for build (MdePkg, MdeModulePkg)"
-            for p in MdePkg MdeModulePkg; do
-              if [ -e "$p" ] || [ -L "$p" ]; then
-                echo "Removing stale $p"
-                rm -rf "$p"
-              fi
-              if [ -d "$UDK_PATH/$p" ]; then
-                ln -s "$UDK_PATH/$p" "$p"
-                echo "Linked $p -> $UDK_PATH/$p"
-              else
-                echo "Warning: $UDK_PATH/$p not found"
-              fi
-            done
-            echo "Listing linked directories:"
-            ls -la MdePkg MdeModulePkg || true
-
        - name: Apply Docker AppArmor settings
          run: |
            src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
@@ -163,31 +139,6 @@ jobs:
          run: |
            git submodule sync --recursive || true
            git submodule update --init --recursive || true
-
-       - name: Ensure UDK from dstatstrussia/audk
-         run: |
-           UDK_PATH="UDK"
-           if [ -d "$UDK_PATH" ]; then
-             echo "Removing existing $UDK_PATH"
-             rm -rf "$UDK_PATH"
-           fi
-           echo "Cloning dstatstrussia/audk into $UDK_PATH"
-           git clone --depth=1 https://github.com/dstatstrussia/audk.git "$UDK_PATH"
-            echo "Creating top-level symlinks for build (MdePkg, MdeModulePkg)"
-            for p in MdePkg MdeModulePkg; do
-              if [ -e "$p" ] || [ -L "$p" ]; then
-                echo "Removing stale $p"
-                rm -rf "$p"
-              fi
-              if [ -d "$UDK_PATH/$p" ]; then
-                ln -s "$UDK_PATH/$p" "$p"
-                echo "Linked $p -> $UDK_PATH/$p"
-              else
-                echo "Warning: $UDK_PATH/$p not found"
-              fi
-            done
-            echo "Listing linked directories:"
-            ls -la MdePkg MdeModulePkg || true
 
        - name: Apply Docker AppArmor settings
          run: |
@@ -224,31 +175,6 @@ jobs:
            git submodule sync --recursive || true
            git submodule update --init --recursive || true
 
-       - name: Ensure UDK from dstatstrussia/audk
-         run: |
-           UDK_PATH="UDK"
-           if [ -d "$UDK_PATH" ]; then
-             echo "Removing existing $UDK_PATH"
-             rm -rf "$UDK_PATH"
-           fi
-           echo "Cloning dstatstrussia/audk into $UDK_PATH"
-           git clone --depth=1 https://github.com/dstatstrussia/audk.git "$UDK_PATH"
-            echo "Creating top-level symlinks for build (MdePkg, MdeModulePkg)"
-            for p in MdePkg MdeModulePkg; do
-              if [ -e "$p" ] || [ -L "$p" ]; then
-                echo "Removing stale $p"
-                rm -rf "$p"
-              fi
-              if [ -d "$UDK_PATH/$p" ]; then
-                ln -s "$UDK_PATH/$p" "$p"
-                echo "Linked $p -> $UDK_PATH/$p"
-              else
-                echo "Warning: $UDK_PATH/$p not found"
-              fi
-            done
-            echo "Listing linked directories:"
-            ls -la MdePkg MdeModulePkg || true
-
        - name: Apply Docker AppArmor settings
          run: |
            src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
@@ -282,31 +208,6 @@ jobs:
            git submodule sync --recursive || true
            git submodule update --init --recursive || true
 
-       - name: Ensure UDK from dstatstrussia/audk
-         run: |
-           UDK_PATH="UDK"
-           if [ -d "$UDK_PATH" ]; then
-             echo "Removing existing $UDK_PATH"
-             rm -rf "$UDK_PATH"
-           fi
-           echo "Cloning dstatstrussia/audk into $UDK_PATH"
-           git clone --depth=1 https://github.com/dstatstrussia/audk.git "$UDK_PATH"
-            echo "Creating top-level symlinks for build (MdePkg, MdeModulePkg)"
-            for p in MdePkg MdeModulePkg; do
-              if [ -e "$p" ] || [ -L "$p" ]; then
-                echo "Removing stale $p"
-                rm -rf "$p"
-              fi
-              if [ -d "$UDK_PATH/$p" ]; then
-                ln -s "$UDK_PATH/$p" "$p"
-                echo "Linked $p -> $UDK_PATH/$p"
-              else
-                echo "Warning: $UDK_PATH/$p not found"
-              fi
-            done
-            echo "Listing linked directories:"
-            ls -la MdePkg MdeModulePkg || true
-
        - name: Apply Docker AppArmor settings
          run: |
            src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
@@ -335,6 +236,7 @@ jobs:
            git submodule update --init --recursive || true
 
        - name: Ensure UDK from dstatstrussia/audk
+         shell: bash
          run: |
            UDK_PATH="UDK"
            if [ -d "$UDK_PATH" ]; then
