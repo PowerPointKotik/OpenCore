@@ -20,6 +20,6 @@
 /**
   Apple CPU Family values for CPUID 0x06
 **/
-#define CPUFAMILY_UNKNOWN                     0x00000000
+#define CPUFAMILY_UNKNOWN  0x00000000
 
 #endif // APPLE_INTEL_CPU_INFO_H_

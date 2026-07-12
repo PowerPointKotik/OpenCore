@@ -33,6 +33,7 @@ exclude_list:
   - Platform/OpenDbvX64Dxe
   # Standalone build compatibility headers
   - Include/Intel/IndustryStandard/AppleIntelCpuInfo.h
+  - Include/Acidanthera/Library/Intel/IndustryStandard/AppleIntelCpuInfo.h
   - Include/IndustryStandard/Cpuid.h
   - Include/Intel/IndustryStandard/Cpuid.h
   - Include/Register/Cpuid.h
