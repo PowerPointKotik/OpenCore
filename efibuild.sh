@@ -525,7 +525,18 @@ if [ "$NEW_BUILDSYSTEM" != "1" ]; then
 fi
 
 mkdir -p MdePkg/Include/Intel/IndustryStandard || exit 1
-cp -f ../Include/Intel/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Intel/IndustryStandard/ || exit 1
+{
+  echo '// Host compat: define missing UEFI types for MicroTool host build'
+  echo '#ifndef _OC_HOST_COMPAT_'
+  echo '#define _OC_HOST_COMPAT_'
+  echo '#ifndef EFI_AP_PROCEDURE'
+  echo 'typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);'
+  echo '#endif'
+  echo 'typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_ALL_APS;'
+  echo 'typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_THIS_AP;'
+  echo '#endif'
+  cat ../Include/Intel/IndustryStandard/AppleIntelCpuInfo.h
+} > MdePkg/Include/Intel/IndustryStandard/AppleIntelCpuInfo.h || exit 1
 cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Intel/IndustryStandard/ || exit 1
 
 . ./edksetup.sh || exit 1
