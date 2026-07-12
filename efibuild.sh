@@ -524,6 +524,10 @@ if [ "$NEW_BUILDSYSTEM" != "1" ]; then
   fi
 fi
 
+mkdir -p MdePkg/Include/Intel/IndustryStandard || exit 1
+cp -f ../Include/Intel/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Intel/IndustryStandard/ || exit 1
+cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Intel/IndustryStandard/ || exit 1
+
 . ./edksetup.sh || exit 1
 
 if [ "$(unamer)" = "Windows" ]; then

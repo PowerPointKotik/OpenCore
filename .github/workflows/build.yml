@@ -72,6 +72,11 @@ jobs:
          run: |
            src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
 
+       - name: Fix Xcode path
+         run: |
+           sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+           unset DEVELOPER_DIR
+
        - run: ./build_duet.tool
        - run: ./build_oc.tool
 
