@@ -541,6 +541,14 @@ cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Intel
 
 . ./edksetup.sh || exit 1
 
+# MicroTool host build includes OpenCorePkg User stubs that require
+# UEFI types not available in host context. Patch the GNUmakefile to
+# exclude the user-layer objects and avoid cascading header errors.
+if [ -f "BaseTools/MicroTool/GNUmakefile" ]; then
+  sed -i.bak '/^include.*User\/Makefile/d' BaseTools/MicroTool/GNUmakefile
+  rm -f BaseTools/MicroTool/GNUmakefile.bak
+fi
+
 if [ "$(unamer)" = "Windows" ]; then
    # Configure Visual Studio environment. Requires:
    # 1. choco install vswhere microsoft-build-tools visualcpp-build-tools nasm zip
