@@ -541,6 +541,17 @@ cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Intel
 mkdir -p MdePkg/Include/Apple/IndustryStandard || exit 1
 cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Apple/IndustryStandard/ || exit 1
 
+# Create Register/Cpuid.h wrapper for OpenCorePkg compatibility
+mkdir -p MdePkg/Include/Register || exit 1
+cat > MdePkg/Include/Register/Cpuid.h << 'CPUIDEOF'
+#ifndef REGISTER_CPUID_H
+#define REGISTER_CPUID_H
+#if defined (MDE_CPU_IA32) || defined (MDE_CPU_X64)
+#include <Register/Intel/Cpuid.h>
+#endif
+#endif
+CPUIDEOF
+
 . ./edksetup.sh || exit 1
 
 # dstatstrussia/audk fork is missing EFI_AP_PROCEDURE and related MP types
