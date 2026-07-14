@@ -542,20 +542,20 @@ cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Intel
 . ./edksetup.sh || exit 1
 
 # dstatstrussia/audk fork is missing EFI_AP_PROCEDURE and related MP types
-# in UefiSpec.h. Insert them before closing #endif for host tool compatibility.
+# in UefiSpec.h. Insert them before the LAST (file-closing) #endif.
 if [ -f "MdePkg/Include/Uefi/UefiSpec.h" ]; then
-  sed -i.bak '/^#endif$/i\
-\
-// Added by OC build system for host tool compatibility\
-#ifndef _OC_HOST_MP_TYPES_\
-#define _OC_HOST_MP_TYPES_\
-#ifndef EFI_AP_PROCEDURE\
-typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);\
-#endif\
-typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_ALL_APS;\
-typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_THIS_AP;\
-#endif\
-' MdePkg/Include/Uefi/UefiSpec.h
+  LAST_ENDIF=$(grep -n '^#endif' MdePkg/Include/Uefi/UefiSpec.h | tail -1 | cut -d: -f1)
+  sed -i.bak "${LAST_ENDIF}i\\
+// Added by OC build system for host tool compatibility\\
+#ifndef _OC_HOST_MP_TYPES_\\
+#define _OC_HOST_MP_TYPES_\\
+#ifndef EFI_AP_PROCEDURE\\
+typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);\\
+#endif\\
+typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_ALL_APS;\\
+typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_THIS_AP;\\
+#endif\\
+" MdePkg/Include/Uefi/UefiSpec.h
   rm -f MdePkg/Include/Uefi/UefiSpec.h.bak
 fi
 
