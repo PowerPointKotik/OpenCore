@@ -541,12 +541,22 @@ cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Intel
 
 . ./edksetup.sh || exit 1
 
-# MicroTool host build includes OpenCorePkg User stubs that require
-# UEFI types not available in host context. Patch the GNUmakefile to
-# exclude the user-layer objects and avoid cascading header errors.
-if [ -f "BaseTools/MicroTool/GNUmakefile" ]; then
-  sed -i.bak '/^include.*User\/Makefile/d' BaseTools/MicroTool/GNUmakefile
-  rm -f BaseTools/MicroTool/GNUmakefile.bak
+# dstatstrussia/audk fork is missing EFI_AP_PROCEDURE and related MP types
+# in UefiSpec.h. Insert them before closing #endif for host tool compatibility.
+if [ -f "MdePkg/Include/Uefi/UefiSpec.h" ]; then
+  sed -i.bak '/^#endif$/i\
+\
+// Added by OC build system for host tool compatibility\
+#ifndef _OC_HOST_MP_TYPES_\
+#define _OC_HOST_MP_TYPES_\
+#ifndef EFI_AP_PROCEDURE\
+typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);\
+#endif\
+typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_ALL_APS;\
+typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_THIS_AP;\
+#endif\
+' MdePkg/Include/Uefi/UefiSpec.h
+  rm -f MdePkg/Include/Uefi/UefiSpec.h.bak
 fi
 
 if [ "$(unamer)" = "Windows" ]; then
