@@ -552,8 +552,22 @@ if [ -f "MdePkg/Include/Uefi/UefiSpec.h" ]; then
 #ifndef EFI_AP_PROCEDURE\\
 typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);\\
 #endif\\
-typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_ALL_APS;\\
-typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_THIS_AP;\\
+typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_ALL_APS)(\\
+  IN EFI_MP_SERVICES_PROTOCOL *This,\\
+  IN EFI_AP_PROCEDURE Procedure,\\
+  IN BOOLEAN SingleThread,\\
+  IN EFI_EVENT WaitEvent OPTIONAL,\\
+  IN UINTN TimeOutInMicroSecsOns,\\
+  IN VOID *ProcedureArgument OPTIONAL,\\
+  OUT UINTN **FailedCpuList OPTIONAL);\\
+typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_THIS_AP)(\\
+  IN EFI_MP_SERVICES_PROTOCOL *This,\\
+  IN EFI_AP_PROCEDURE Procedure,\\
+  IN UINTN ProcessorNumber,\\
+  IN EFI_EVENT WaitEvent OPTIONAL,\\
+  IN UINTN TimeOutInMicroSecsOns,\\
+  IN VOID *ProcedureArgument OPTIONAL,\\
+  OUT BOOLEAN *Finished OPTIONAL);\\
 #endif\\
 " MdePkg/Include/Uefi/UefiSpec.h
   rm -f MdePkg/Include/Uefi/UefiSpec.h.bak
