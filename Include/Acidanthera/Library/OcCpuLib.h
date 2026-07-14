@@ -19,7 +19,7 @@
 #include <IndustryStandard/CpuId.h>
 #include <Intel/IndustryStandard/AppleIntelCpuInfo.h>
 #ifndef EFIUSER
-#include <Protocol/MpService.h>
+  #include <Protocol/MpService.h>
 #endif
 
 /**
