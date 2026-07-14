@@ -549,6 +549,7 @@ if [ -f "MdePkg/Include/Uefi/UefiSpec.h" ]; then
 // Added by OC build system for host tool compatibility\\
 #ifndef _OC_HOST_MP_TYPES_\\
 #define _OC_HOST_MP_TYPES_\\
+typedef struct _EFI_MP_SERVICES_PROTOCOL EFI_MP_SERVICES_PROTOCOL;\\
 #ifndef EFI_AP_PROCEDURE\\
 typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);\\
 #endif\\
