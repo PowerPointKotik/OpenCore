@@ -18,7 +18,9 @@
 #include <Uefi.h>
 #include <IndustryStandard/CpuId.h>
 #include <Intel/IndustryStandard/AppleIntelCpuInfo.h>
+#ifndef EFIUSER
 #include <Protocol/MpService.h>
+#endif
 
 /**
   Assumed CPU frequency when it cannot be detected.

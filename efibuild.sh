@@ -554,39 +554,6 @@ CPUIDEOF
 
 . ./edksetup.sh || exit 1
 
-# dstatstrussia/audk fork is missing EFI_AP_PROCEDURE and related MP types
-# in UefiSpec.h. Insert them before the LAST (file-closing) #endif.
-if [ -f "MdePkg/Include/Uefi/UefiSpec.h" ]; then
-  LAST_ENDIF=$(grep -n '^#endif' MdePkg/Include/Uefi/UefiSpec.h | tail -1 | cut -d: -f1)
-  sed -i.bak "${LAST_ENDIF}i\\
-// Added by OC build system for host tool compatibility\\
-#ifndef _OC_HOST_MP_TYPES_\\
-#define _OC_HOST_MP_TYPES_\\
-typedef struct _EFI_MP_SERVICES_PROTOCOL EFI_MP_SERVICES_PROTOCOL;\\
-#ifndef EFI_AP_PROCEDURE\\
-typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);\\
-#endif\\
-typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_ALL_APS)(\\
-  IN EFI_MP_SERVICES_PROTOCOL *This,\\
-  IN EFI_AP_PROCEDURE Procedure,\\
-  IN BOOLEAN SingleThread,\\
-  IN EFI_EVENT WaitEvent OPTIONAL,\\
-  IN UINTN TimeOutInMicroSecsOns,\\
-  IN VOID *ProcedureArgument OPTIONAL,\\
-  OUT UINTN **FailedCpuList OPTIONAL);\\
-typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_THIS_AP)(\\
-  IN EFI_MP_SERVICES_PROTOCOL *This,\\
-  IN EFI_AP_PROCEDURE Procedure,\\
-  IN UINTN ProcessorNumber,\\
-  IN EFI_EVENT WaitEvent OPTIONAL,\\
-  IN UINTN TimeOutInMicroSecsOns,\\
-  IN VOID *ProcedureArgument OPTIONAL,\\
-  OUT BOOLEAN *Finished OPTIONAL);\\
-#endif\\
-" MdePkg/Include/Uefi/UefiSpec.h
-  rm -f MdePkg/Include/Uefi/UefiSpec.h.bak
-fi
-
 if [ "$(unamer)" = "Windows" ]; then
    # Configure Visual Studio environment. Requires:
    # 1. choco install vswhere microsoft-build-tools visualcpp-build-tools nasm zip
