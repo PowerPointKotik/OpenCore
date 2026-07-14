@@ -554,11 +554,17 @@ CPUIDEOF
 
 . ./edksetup.sh || exit 1
 
-# dstatstrussia/audk fork is missing EFI_AP_PROCEDURE types. Inject into
-# PiMultiPhase.h before its closing #endif so both duet and oc builds see them.
-if [ -f "MdePkg/Include/Pi/PiMultiPhase.h" ]; then
-  LAST_ENDIF=$(grep -n '^#endif' MdePkg/Include/Pi/PiMultiPhase.h | tail -1 | cut -d: -f1)
-  sed -i.bak "${LAST_ENDIF}i\\
+# Suppress C11 typedef redefinition warning - our injected types may appear
+# in both UefiSpec.h and PiMultiPhase.h which are included in different contexts.
+export CFLAGS="${CFLAGS} -Wno-typedef-redefinition"
+export BUILD_CFLAGS="${BUILD_CFLAGS} -Wno-typedef-redefinition"
+
+# dstatstrussia/audk fork is missing EFI_AP_PROCEDURE and related types.
+# Inject into both UefiSpec.h (duet/MicroTool) and PiMultiPhase.h (OpenCore firmware).
+for f in MdePkg/Include/Uefi/UefiSpec.h MdePkg/Include/Pi/PiMultiPhase.h; do
+  if [ -f "$f" ]; then
+    LAST_ENDIF=$(grep -n '^#endif' "$f" | tail -1 | cut -d: -f1)
+    sed -i.bak "${LAST_ENDIF}i\\
 // Added by OC build system for host/duet compatibility\\
 #ifndef EFI_AP_PROCEDURE\\
 typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);\\
@@ -582,11 +588,10 @@ typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_THIS_AP)(\\
   IN VOID *ProcedureArgument OPTIONAL,\\
   OUT BOOLEAN *Finished OPTIONAL);\\
 #endif\\
-" MdePkg/Include/Pi/PiMultiPhase.h
-  rm -f MdePkg/Include/Pi/PiMultiPhase.h.bak
-fi
-
-if [ "$(unamer)" = "Windows" ]; then
+" "$f"
+    rm -f "${f}.bak"
+  fi
+done
    # Configure Visual Studio environment. Requires:
    # 1. choco install vswhere microsoft-build-tools visualcpp-build-tools nasm zip
    # 2. iasl in PATH for MdeModulePkg
