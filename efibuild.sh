@@ -561,7 +561,7 @@ if [ -f "MdePkg/Include/Uefi/UefiSpec.h" ]; then
   LAST_ENDIF=$(grep -n '^#endif' MdePkg/Include/Uefi/UefiSpec.h | tail -1 | cut -d: -f1)
   sed -i.bak "${LAST_ENDIF}i\\
 // Added by OC build system for host/duet compatibility\\
-#ifndef __PI_MULTI_PHASE_H__\\
+#ifndef __PI_MULTIPHASE_H__\\
 #ifndef EFI_AP_PROCEDURE\\
 typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);\\
 #endif\\
