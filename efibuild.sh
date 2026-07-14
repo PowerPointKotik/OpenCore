@@ -538,6 +538,8 @@ mkdir -p MdePkg/Include/Intel/IndustryStandard || exit 1
   cat ../Include/Intel/IndustryStandard/AppleIntelCpuInfo.h
 } > MdePkg/Include/Intel/IndustryStandard/AppleIntelCpuInfo.h || exit 1
 cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Intel/IndustryStandard/ || exit 1
+mkdir -p MdePkg/Include/Apple/IndustryStandard || exit 1
+cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Apple/IndustryStandard/ || exit 1
 
 . ./edksetup.sh || exit 1
 
