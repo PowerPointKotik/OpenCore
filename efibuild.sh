@@ -489,8 +489,9 @@ if [ "$DISCARD_PACKAGES" != "" ]; then
   for package_to_discard in "${DISCARD_PACKAGES[@]}" ; do
     if [ -d "${package_to_discard}" ]; then
       rm -rf "${package_to_discard}"
-  fi
-  fi
+    fi
+  done
+fi
 
 if [ "$NEW_BUILDSYSTEM" != "1" ]; then
   if [ -d ../Patches ]; then
