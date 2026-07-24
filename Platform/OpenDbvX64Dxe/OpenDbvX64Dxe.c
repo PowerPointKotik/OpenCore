@@ -91,6 +91,7 @@ IsSharedSupportVolume (
 
 STATIC
 BOOLEAN
+__attribute__((unused))
 IsPrebootVolume (
   IN  EFI_HANDLE  Device
   )
@@ -158,7 +159,7 @@ IsArm64Kernel (
 
   if (Magic == MACH_HEADER_64_SIGNATURE) {
     MACH_HEADER_64  *Header64 = (MACH_HEADER_64 *)KernelBuffer;
-    CpuType = Header64->cputype;
+    CpuType = Header64->CpuType;
     return CpuType == MachCpuTypeArm64 || CpuType == MachCpuTypeArm6432;
   } else if (Magic == MACH_FAT_BINARY_SIGNATURE || Magic == MACH_FAT_BINARY_INVERT_SIGNATURE) {
     EFI_STATUS  Status;
@@ -290,7 +291,7 @@ DirectLoadKernel (
   Status = RootDirectory->Open (
                           RootDirectory,
                           &KernelFile,
-                          KernelPath,
+                          (CHAR16 *)KernelPath,
                           EFI_FILE_MODE_READ,
                           0
                           );
@@ -701,7 +702,7 @@ OcGetDbtBootEntries (
       Status = RootDirectory->Open (
                               RootDirectory,
                               &BootDirectory,
-                              KernelPaths[Index],
+                              (CHAR16 *)KernelPaths[Index],
                               EFI_FILE_MODE_READ,
                               0
                               );
