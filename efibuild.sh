@@ -489,9 +489,8 @@ if [ "$DISCARD_PACKAGES" != "" ]; then
   for package_to_discard in "${DISCARD_PACKAGES[@]}" ; do
     if [ -d "${package_to_discard}" ]; then
       rm -rf "${package_to_discard}"
-    fi
-  done
-fi
+  fi
+  fi
 
 if [ "$NEW_BUILDSYSTEM" != "1" ]; then
   if [ -d ../Patches ]; then
@@ -589,6 +588,8 @@ for f in MdePkg/Include/Uefi/UefiSpec.h MdePkg/Include/Pi/PiMultiPhase.h; do
     rm -f "${f}.bak"
   fi
 done
+
+if [ "$(unamer)" = "Windows" ]; then
    # Configure Visual Studio environment. Requires:
    # 1. choco install vswhere microsoft-build-tools visualcpp-build-tools nasm zip
    # 2. iasl in PATH for MdeModulePkg
@@ -699,6 +700,7 @@ if [ -s "$ps_env_file" ]; then
       fi
     fi
   fi
+fi
 
 if [ "$NEW_BUILDSYSTEM" != "1" ]; then
    if [ "$SKIP_TESTS" != "1" ]; then
