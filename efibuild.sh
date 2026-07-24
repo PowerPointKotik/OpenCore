@@ -554,38 +554,36 @@ CPUIDEOF
 
 . ./edksetup.sh || exit 1
 
-# dstatstrussia/audk fork is missing EFI_AP_PROCEDURE and related types.
-# Inject into both UefiSpec.h (duet/MicroTool) and PiMultiPhase.h (OpenCore firmware).
-INJECT_SRC='
-// Added by OC build system for host/duet compatibility
-#ifndef _OC_EFI_MP_TYPES_DEFINED_
-#define _OC_EFI_MP_TYPES_DEFINED_
-#ifndef EFI_AP_PROCEDURE
-typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);
-#endif
-typedef struct _EFI_MP_SERVICES_PROTOCOL EFI_MP_SERVICES_PROTOCOL;
-typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_ALL_APS)(
-  IN EFI_MP_SERVICES_PROTOCOL *This,
-  IN EFI_AP_PROCEDURE Procedure,
-  IN BOOLEAN SingleThread,
-  IN EFI_EVENT WaitEvent OPTIONAL,
-  IN UINTN TimeOutInMicroSecsOns,
-  IN VOID *ProcedureArgument OPTIONAL,
-  OUT UINTN **FailedCpuList OPTIONAL);
-typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_THIS_AP)(
-  IN EFI_MP_SERVICES_PROTOCOL *This,
-  IN EFI_AP_PROCEDURE Procedure,
-  IN UINTN ProcessorNumber,
-  IN EFI_EVENT WaitEvent OPTIONAL,
-  IN UINTN TimeOutInMicroSecsOns,
-  IN VOID *ProcedureArgument OPTIONAL,
-  OUT BOOLEAN *Finished OPTIONAL);
-#endif
-'
+# dstatstrussia/audk fork is missing EFI_AP_PROCEDURE types.
+# Inject into both UefiSpec.h (duet) and PiMultiPhase.h (OpenCore firmware).
 for f in MdePkg/Include/Uefi/UefiSpec.h MdePkg/Include/Pi/PiMultiPhase.h; do
   if [ -f "$f" ]; then
     LAST_ENDIF=$(grep -n '^#endif' "$f" | tail -1 | cut -d: -f1)
-    printf '%s\n' "$INJECT_SRC" | sed -i.bak "${LAST_ENDIF}r /dev/stdin" "$f"
+  sed -i.bak "${LAST_ENDIF}i\\
+// Added by OC build system for host/duet compatibility\\
+#ifndef _OC_EFI_MP_TYPES_DEFINED_\\
+#ifndef EFI_AP_PROCEDURE\\
+typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);\\
+#endif\\
+typedef struct _EFI_MP_SERVICES_PROTOCOL EFI_MP_SERVICES_PROTOCOL;\\
+typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_ALL_APS)(\\
+  IN EFI_MP_SERVICES_PROTOCOL *This,\\
+  IN EFI_AP_PROCEDURE Procedure,\\
+  IN BOOLEAN SingleThread,\\
+  IN EFI_EVENT WaitEvent OPTIONAL,\\
+  IN UINTN TimeOutInMicroSecsOns,\\
+  IN VOID *ProcedureArgument OPTIONAL,\\
+  OUT UINTN **FailedCpuList OPTIONAL);\\
+typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_THIS_AP)(\\
+  IN EFI_MP_SERVICES_PROTOCOL *This,\\
+  IN EFI_AP_PROCEDURE Procedure,\\
+  IN UINTN ProcessorNumber,\\
+  IN EFI_EVENT WaitEvent OPTIONAL,\\
+  IN UINTN TimeOutInMicroSecsOns,\\
+  IN VOID *ProcedureArgument OPTIONAL,\\
+  OUT BOOLEAN *Finished OPTIONAL);\\
+#endif\\
+" "$f"
     rm -f "${f}.bak"
   fi
 done
@@ -701,7 +699,6 @@ if [ -s "$ps_env_file" ]; then
       fi
     fi
   fi
-fi
 
 if [ "$NEW_BUILDSYSTEM" != "1" ]; then
    if [ "$SKIP_TESTS" != "1" ]; then
