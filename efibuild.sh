@@ -554,41 +554,38 @@ CPUIDEOF
 
 . ./edksetup.sh || exit 1
 
-# Suppress C11 typedef redefinition warning - our injected types may appear
-# in both UefiSpec.h and PiMultiPhase.h which are included in different contexts.
-export CFLAGS="${CFLAGS} -Wno-typedef-redefinition"
-export BUILD_CFLAGS="${BUILD_CFLAGS} -Wno-typedef-redefinition"
-
 # dstatstrussia/audk fork is missing EFI_AP_PROCEDURE and related types.
 # Inject into both UefiSpec.h (duet/MicroTool) and PiMultiPhase.h (OpenCore firmware).
+INJECT_SRC='
+// Added by OC build system for host/duet compatibility
+#ifndef _OC_EFI_MP_TYPES_DEFINED_
+#define _OC_EFI_MP_TYPES_DEFINED_
+#ifndef EFI_AP_PROCEDURE
+typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);
+#endif
+typedef struct _EFI_MP_SERVICES_PROTOCOL EFI_MP_SERVICES_PROTOCOL;
+typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_ALL_APS)(
+  IN EFI_MP_SERVICES_PROTOCOL *This,
+  IN EFI_AP_PROCEDURE Procedure,
+  IN BOOLEAN SingleThread,
+  IN EFI_EVENT WaitEvent OPTIONAL,
+  IN UINTN TimeOutInMicroSecsOns,
+  IN VOID *ProcedureArgument OPTIONAL,
+  OUT UINTN **FailedCpuList OPTIONAL);
+typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_THIS_AP)(
+  IN EFI_MP_SERVICES_PROTOCOL *This,
+  IN EFI_AP_PROCEDURE Procedure,
+  IN UINTN ProcessorNumber,
+  IN EFI_EVENT WaitEvent OPTIONAL,
+  IN UINTN TimeOutInMicroSecsOns,
+  IN VOID *ProcedureArgument OPTIONAL,
+  OUT BOOLEAN *Finished OPTIONAL);
+#endif
+'
 for f in MdePkg/Include/Uefi/UefiSpec.h MdePkg/Include/Pi/PiMultiPhase.h; do
   if [ -f "$f" ]; then
     LAST_ENDIF=$(grep -n '^#endif' "$f" | tail -1 | cut -d: -f1)
-    sed -i.bak "${LAST_ENDIF}i\\
-// Added by OC build system for host/duet compatibility\\
-#ifndef EFI_AP_PROCEDURE\\
-typedef VOID (EFIAPI *EFI_AP_PROCEDURE)(IN OUT VOID *Buffer);\\
-#endif\\
-#ifndef EFI_MP_SERVICES_STARTUP_ALL_APS\\
-typedef struct _EFI_MP_SERVICES_PROTOCOL EFI_MP_SERVICES_PROTOCOL;\\
-typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_ALL_APS)(\\
-  IN EFI_MP_SERVICES_PROTOCOL *This,\\
-  IN EFI_AP_PROCEDURE Procedure,\\
-  IN BOOLEAN SingleThread,\\
-  IN EFI_EVENT WaitEvent OPTIONAL,\\
-  IN UINTN TimeOutInMicroSecsOns,\\
-  IN VOID *ProcedureArgument OPTIONAL,\\
-  OUT UINTN **FailedCpuList OPTIONAL);\\
-typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_THIS_AP)(\\
-  IN EFI_MP_SERVICES_PROTOCOL *This,\\
-  IN EFI_AP_PROCEDURE Procedure,\\
-  IN UINTN ProcessorNumber,\\
-  IN EFI_EVENT WaitEvent OPTIONAL,\\
-  IN UINTN TimeOutInMicroSecsOns,\\
-  IN VOID *ProcedureArgument OPTIONAL,\\
-  OUT BOOLEAN *Finished OPTIONAL);\\
-#endif\\
-" "$f"
+    printf '%s\n' "$INJECT_SRC" | sed -i.bak "${LAST_ENDIF}r /dev/stdin" "$f"
     rm -f "${f}.bak"
   fi
 done
