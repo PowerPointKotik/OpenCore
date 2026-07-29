@@ -317,7 +317,7 @@ OcToolLoadEntry (
     DebugPrintDevicePath (DEBUG_INFO, "OC: Storage path", *StoragePath);
   }
 
-  return EFI_SUCCESS;
+  return Status;
 }
 
 STATIC
