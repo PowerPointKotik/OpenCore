@@ -1636,6 +1636,25 @@ InternalLoadBootEntry (
 
   DEBUG_CODE_END ();
 
+  //
+  // Skip ARM64 PE binaries early — EDK2 LoadImage rejects them on x86_64.
+  //
+  if ((EntryData != NULL) && (EntryDataSize >= 2)) {
+    UINT16  DosMagic = *(UINT16 *)EntryData;
+    if (DosMagic == 0x5A4D && EntryDataSize >= 0x40) {
+      UINT32  PeOffset = *(UINT32 *)((UINT8 *)EntryData + 0x3C);
+      if ((PeOffset + sizeof (UINT32) + sizeof (UINT16)) < EntryDataSize) {
+        UINT32  PeSig   = *(UINT32 *)((UINT8 *)EntryData + PeOffset);
+        UINT16  Machine = *(UINT16 *)((UINT8 *)EntryData + PeOffset + sizeof (UINT32));
+        if ((PeSig == 0x00004550) && (Machine == 0xAA64)) {
+          DEBUG ((DEBUG_WARN, "OCB: ARM64 binary detected — skipping LoadImage, use DBT entry\n"));
+          FreePool (EntryData);
+          return EFI_UNSUPPORTED;
+        }
+      }
+    }
+  }
+
   Status = gBS->LoadImage (
                   FALSE,
                   ParentHandle,
