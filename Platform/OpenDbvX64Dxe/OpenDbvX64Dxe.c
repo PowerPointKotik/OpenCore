@@ -248,9 +248,7 @@ CreateMinimalDeviceTree (
 STATIC
 EFI_STATUS
 DirectLoadKernel (
-  IN  OC_PICKER_CONTEXT  *PickerContext,
-  IN  EFI_HANDLE         Device,
-  IN  CONST CHAR16       *KernelPath
+  IN  OC_PICKER_CONTEXT  *PickerContext
   )
 {
   EFI_STATUS                       Status;
@@ -272,7 +270,21 @@ DirectLoadKernel (
   UINTN                            DeviceTreeSize;
   UINTN                            Index;
   MACH_LOAD_COMMAND                *Cmd;
-  MACH_HEADER_64                    *Header64;
+  MACH_HEADER_64                   *Header64;
+  EFI_HANDLE                       Device;
+  CONST CHAR16                     *KernelPath;
+
+  if (gDbtContext == NULL) {
+    return EFI_NOT_STARTED;
+  }
+
+  Device     = DbtGetInstallerDevice (gDbtContext);
+  KernelPath = DbtGetKernelPath (gDbtContext);
+
+  if (Device == NULL || KernelPath == NULL) {
+    DEBUG ((DEBUG_ERROR, "DirectKernel: No boot info set\n"));
+    return EFI_NOT_STARTED;
+  }
 
   Status = gBS->HandleProtocol (
                    Device,
@@ -288,16 +300,51 @@ DirectLoadKernel (
     return Status;
   }
 
-  Status = RootDirectory->Open (
-                          RootDirectory,
-                          &KernelFile,
-                          (CHAR16 *)KernelPath,
-                          EFI_FILE_MODE_READ,
-                          0
-                          );
-  if (EFI_ERROR (Status)) {
-    RootDirectory->Close (RootDirectory);
-    return Status;
+  //
+  // Try multiple kernel paths: the stored path first, then fallbacks
+  //
+  {
+    STATIC CONST CHAR16  *FallbackPaths[] = {
+      L"\\kernel",
+      L"\\SharedSupport\\kernel",
+      L"\\System\\Library\\Kernels\\kernel",
+      NULL
+    };
+    UINTN  PathIndex;
+    CONST CHAR16  *TryPath;
+
+    KernelFile = NULL;
+
+    TryPath = KernelPath;
+    Status = RootDirectory->Open (
+                             RootDirectory,
+                             &KernelFile,
+                             (CHAR16 *)TryPath,
+                             EFI_FILE_MODE_READ,
+                             0
+                             );
+
+    for (PathIndex = 0; EFI_ERROR (Status) && FallbackPaths[PathIndex] != NULL; PathIndex++) {
+      if (StrCmp (FallbackPaths[PathIndex], KernelPath) == 0) {
+        continue;
+      }
+      Status = RootDirectory->Open (
+                               RootDirectory,
+                               &KernelFile,
+                               (CHAR16 *)FallbackPaths[PathIndex],
+                               EFI_FILE_MODE_READ,
+                               0
+                               );
+      if (!EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_INFO, "DirectKernel: Found kernel at fallback path %s\n", FallbackPaths[PathIndex]));
+      }
+    }
+
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "DirectKernel: Failed to open kernel - %r\n", Status));
+      RootDirectory->Close (RootDirectory);
+      return Status;
+    }
   }
 
   KernelBuffer = NULL;
@@ -507,6 +554,17 @@ DirectLoadKernel (
 STATIC
 EFI_STATUS
 EFIAPI
+DbtBootEntryAction (
+  IN OUT  OC_PICKER_CONTEXT         *PickerContext,
+  IN      EFI_DEVICE_PATH_PROTOCOL  *DevicePath
+  )
+{
+  return DirectLoadKernel (PickerContext);
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
 OcGetDbtBootEntries (
   IN OUT         OC_PICKER_CONTEXT  *PickerContext,
   IN     CONST EFI_HANDLE           Device OPTIONAL,
@@ -692,6 +750,7 @@ OcGetDbtBootEntries (
   //
   if (EntryCount == 0) {
     STATIC CONST CHAR16  *KernelPaths[] = {
+      L"\\kernel",
       L"\\SharedSupport\\kernel",
       L"\\System\\Library\\Kernels\\kernel",
       NULL
@@ -740,8 +799,6 @@ OcGetDbtBootEntries (
       DEBUG ((DEBUG_INFO, "DBT: Found .IAPhysicalMedia marker - macOS 27 Golden Gate installer detected\n"));
       DEBUG ((DEBUG_INFO, "DBT: Checking for mounted SharedSupport volume...\n"));
 
-      gInstallerDevice = Device;
-
       EFI_HANDLE  *HandleBuffer;
       UINTN       HandleCount;
       EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FsProtocol;
@@ -772,6 +829,7 @@ OcGetDbtBootEntries (
             if (!EFI_ERROR (Status)) {
               if (IsSharedSupportVolume (SharedRoot)) {
                 DEBUG ((DEBUG_INFO, "DBT: Found mounted SharedSupport volume for Golden Gate installer\n"));
+                gInstallerDevice = HandleBuffer[Idx];
                 EntryCount = 1;
                 IsMacSoftwareUpdate = TRUE;
                 SharedRoot->Close (SharedRoot);
@@ -802,24 +860,15 @@ OcGetDbtBootEntries (
 
     NewEntries[0].Id = AllocateCopyPool (AsciiStrSize ("macOS-Installer"), "macOS-Installer");
     NewEntries[0].Name = AllocateCopyPool (AsciiStrSize ("macOS Installer (Translated)"), "macOS Installer (Translated)");
+    NewEntries[0].Flavour = AllocateCopyPool (AsciiStrSize ("DirectKernel"), "DirectKernel");
+
     //
-    // For macOS 27+ DirectKernel installer, use DirectKernel flavour
+    // All DBT entries go through unmanaged boot action to bypass LoadImage
+    // since boot.efi/kernel are ARM64 and EDK2 LoadImage will reject them.
     //
-    if (IsMacSoftwareUpdate && gDbtContext != NULL) {
-      NewEntries[0].Flavour = AllocateCopyPool (AsciiStrSize ("DirectKernel"), "DirectKernel");
-      NewEntries[0].Path = AllocateCopyPool (AsciiStrSize ("\\SharedSupport\\kernel"), "\\SharedSupport\\kernel");
-      NewEntries[0].UnmanagedBootAction = (OC_BOOT_UNMANAGED_ACTION)DirectLoadKernel;
-      NewEntries[0].UnmanagedBootGetFinalDevicePath = NULL;
-    } else {
-      NewEntries[0].Flavour = AllocateCopyPool (AsciiStrSize ("OpenDbt"), "OpenDbt");
-      if (IsMacSoftwareUpdate) {
-        DEBUG ((DEBUG_INFO, "DBT: Using macOS 27+ MobileAsset boot path: %s\n", "\\SharedSupport\\boot.efi"));
-        NewEntries[0].Path = AllocateCopyPool (AsciiStrSize ("\\SharedSupport\\boot.efi"), "\\SharedSupport\\boot.efi");
-      } else {
-        DEBUG ((DEBUG_INFO, "DBT: Using traditional installer boot path: %s\n", "\\System\\Library\\CoreServices\\boot.efi"));
-        NewEntries[0].Path = AllocateCopyPool (AsciiStrSize ("\\System\\Library\\CoreServices\\boot.efi"), "\\System\\Library\\CoreServices\\boot.efi");
-      }
-    }
+    DbtSetBootInfo (gDbtContext, gInstallerDevice != NULL ? gInstallerDevice : Device, L"\\SharedSupport\\kernel");
+    NewEntries[0].UnmanagedBootAction = DbtBootEntryAction;
+    NewEntries[0].UnmanagedBootGetFinalDevicePath = NULL;
 
     *Entries    = NewEntries;
     *NumEntries = EntryCount;

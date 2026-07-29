@@ -12,55 +12,7 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/OcMemoryLib.h>
 
-/**
-  ARM64 CPU state for translation
-**/
-typedef struct {
-  UINT64 X0;
-  UINT64 X1;
-  UINT64 X2;
-  UINT64 X3;
-  UINT64 X4;
-  UINT64 X5;
-  UINT64 X6;
-  UINT64 X7;
-  UINT64 X8;
-  UINT64 X9;
-  UINT64 X10;
-  UINT64 X11;
-  UINT64 X12;
-  UINT64 X13;
-  UINT64 X14;
-  UINT64 X15;
-  UINT64 X16;
-  UINT64 X17;
-  UINT64 X18;
-  UINT64 X19;
-  UINT64 X20;
-  UINT64 X21;
-  UINT64 X22;
-  UINT64 X23;
-  UINT64 X24;
-  UINT64 X25;
-  UINT64 X26;
-  UINT64 X27;
-  UINT64 X28;
-  UINT64 FP;
-  UINT64 SP;
-  UINT64 PC;
-  UINT64 SP_SR;
-} DBT_ARM64_CONTEXT;
-
-/**
-  DBT translation context
-**/
-typedef struct {
-  OC_VMEM_CONTEXT  VmContext;
-  VOID            *TranslatedCode;
-  UINTN           TranslatedSize;
-  UINTN           CodeCapacity;
-  UINT8           CodeBuffer[0];
-} DBT_CONTEXT;
+#include "OcDbtLib.h"
 
 //
 // ARM64 instruction decode helpers
@@ -241,6 +193,55 @@ DbtInitContext (
 }
 
 EFI_STATUS
+DbtSetBootInfo (
+  IN DBT_CONTEXT  *Context,
+  IN EFI_HANDLE   InstallerDevice,
+  IN CONST CHAR16 *KernelPath
+  )
+{
+  UINTN  Len;
+
+  if (Context == NULL || KernelPath == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  if (Context->KernelPath != NULL) {
+    FreePool (Context->KernelPath);
+  }
+
+  Len = StrSize (KernelPath);
+  Context->KernelPath = AllocateCopyPool (Len, (VOID *)KernelPath);
+  if (Context->KernelPath == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  Context->InstallerDevice = InstallerDevice;
+  return EFI_SUCCESS;
+}
+
+EFI_HANDLE
+DbtGetInstallerDevice (
+  IN DBT_CONTEXT  *Context
+  )
+{
+  if (Context == NULL) {
+    return NULL;
+  }
+  return Context->InstallerDevice;
+}
+
+CONST CHAR16 *
+DbtGetKernelPath (
+  IN DBT_CONTEXT  *Context
+  )
+{
+  if (Context == NULL) {
+    return NULL;
+  }
+  return Context->KernelPath;
+}
+
+EFI_STATUS
 DbtTranslateBlock (
   IN OUT DBT_CONTEXT  *Context,
   IN     VOID         *ArmCode,
@@ -272,6 +273,35 @@ DbtTranslateBlock (
   }
 
   MaxX86Size = Context->CodeCapacity - Context->TranslatedSize;
+
+  //
+  // Add prologue on first translation
+  //
+  if (Context->TranslatedSize == 0 && X86Code == NULL) {
+    //
+    // push rbp; mov rbp, rsp; sub rsp, 0x1000 (shadow space)
+    //
+    X86Buf[X86Offset++] = 0x55;        // push rbp
+    X86Buf[X86Offset++] = 0x48;        // REX.W
+    X86Buf[X86Offset++] = 0x89;        // MOV r/m64, r64
+    X86Buf[X86Offset++] = 0xE5;        // MOV RBP, RSP
+    X86Buf[X86Offset++] = 0x48;        // REX.W
+    X86Buf[X86Offset++] = 0x81;        // SUB r/m64, imm32
+    X86Buf[X86Offset++] = 0xEC;        // SUB RSP, ...
+    X86Buf[X86Offset++] = 0x00;        // imm32[0]
+    X86Buf[X86Offset++] = 0x10;        // imm32[1]
+    X86Buf[X86Offset++] = 0x00;        // imm32[2]
+    X86Buf[X86Offset++] = 0x00;        // imm32[3]
+
+    //
+    // Save ARM64 context pointer (in RDI) -> [RBP-8]
+    //
+    X86Buf[X86Offset++] = 0x48;        // REX.W
+    X86Buf[X86Offset++] = 0x89;        // MOV r/m64, r64
+    X86Buf[X86Offset++] = 0x7D;        // MOV [RBP-8], RDI
+    X86Buf[X86Offset++] = 0xF8;        // offset = -8
+  }
+
   ArmOffset = 0;
   while (ArmOffset < CodeSize) {
     if (X86Offset >= MaxX86Size) {
@@ -282,6 +312,14 @@ DbtTranslateBlock (
     X86Offset += X86Size;
   }
 
+  //
+  // Add epilogue: leave; ret
+  //
+  if (X86Code == NULL) {
+    X86Buf[X86Offset++] = 0xC9;        // LEAVE
+    X86Buf[X86Offset++] = 0xC3;        // RET
+  }
+
   if (X86Code == NULL) {
     Context->TranslatedSize += X86Offset;
   }
@@ -289,17 +327,32 @@ DbtTranslateBlock (
   return EFI_SUCCESS;
 }
 
-VOID *
+VOID
 DbtExecute (
   IN DBT_CONTEXT      *Context,
   IN DBT_ARM64_CONTEXT *ArmContext
   )
 {
-  if (Context == NULL || ArmContext == NULL) {
-    return NULL;
+  VOID  (*TranslatedEntry)(DBT_ARM64_CONTEXT *);
+
+  if (Context == NULL || ArmContext == NULL || Context->TranslatedCode == NULL) {
+    return;
   }
 
-  return Context->TranslatedCode;
+  DEBUG ((
+    DEBUG_INFO,
+    "DBT: Jumping to translated code at %p SP=0x%llx PC=0x%llx\n",
+    Context->TranslatedCode,
+    ArmContext->SP,
+    ArmContext->PC
+    ));
+
+  //
+  // Jump to translated code
+  //
+  TranslatedEntry = (VOID (*)(DBT_ARM64_CONTEXT *))Context->TranslatedCode;
+
+  TranslatedEntry (ArmContext);
 }
 
 VOID
@@ -310,6 +363,9 @@ DbtFreeContext (
   if (Context != NULL) {
     if (Context->VmContext.MemoryPool != NULL) {
       gBS->FreePages ((UINTN)Context->VmContext.MemoryPool, Context->VmContext.FreePages);
+    }
+    if (Context->KernelPath != NULL) {
+      FreePool (Context->KernelPath);
     }
     gBS->FreePages ((UINTN)Context, EFI_SIZE_TO_PAGES (sizeof (DBT_CONTEXT) + Context->CodeCapacity));
   }

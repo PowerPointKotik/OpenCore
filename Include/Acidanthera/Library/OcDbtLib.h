@@ -8,7 +8,6 @@
 #define OC_DBT_LIB_H
 
 #include <Uefi.h>
-#include <Library/OcMemoryLib.h>
 
 /**
   ARM64 CPU state for translation
@@ -50,40 +49,39 @@ typedef struct {
 } DBT_ARM64_CONTEXT;
 
 /**
-  DBT translation context
+  DBT translation context (opaque)
 **/
-typedef struct {
-  OC_VMEM_CONTEXT  VmContext;
-  VOID            *TranslatedCode;
-  UINTN           TranslatedSize;
-  UINTN           CodeCapacity;
-  UINT8           CodeBuffer[0];
-} DBT_CONTEXT;
+typedef struct DBT_CONTEXT DBT_CONTEXT;
 
-/**
-  Initialize DBT context for ARM64 to x86_64 translation
-
-  @param[out]  Context       DBT context
-  @param[in]   CodeSize      Size of code buffer to allocate
-
-  @retval EFI_SUCCESS on success
-**/
 EFI_STATUS
 DbtInitContext (
   OUT DBT_CONTEXT  **Context,
   IN  UINTN         CodeSize
   );
 
-/**
-  Translate ARM64 code to x86_64
+EFI_STATUS
+DbtSetBootInfo (
+  IN DBT_CONTEXT  *Context,
+  IN EFI_HANDLE   InstallerDevice,
+  IN CONST CHAR16 *KernelPath
+  );
 
-  @param[in,out]  Context       DBT context
-  @param[in]      ArmCode       ARM64 code source
-  @param[in]      CodeSize      Code size in bytes
-  @param[out]     X86Code       Translated x86_64 code (optional)
+EFI_HANDLE
+DbtGetInstallerDevice (
+  IN DBT_CONTEXT  *Context
+  );
 
-  @retval EFI_SUCCESS on success
-**/
+CONST CHAR16 *
+DbtGetKernelPath (
+  IN DBT_CONTEXT  *Context
+  );
+
+VOID
+DbtExecute (
+  IN DBT_CONTEXT       *Context,
+  IN DBT_ARM64_CONTEXT *ArmContext
+  );
+
 EFI_STATUS
 DbtTranslateBlock (
   IN OUT DBT_CONTEXT  *Context,
@@ -92,25 +90,6 @@ DbtTranslateBlock (
   OUT    VOID         *X86Code  OPTIONAL
   );
 
-/**
-  Execute translated code with given context
-
-  @param[in]  Context       DBT context
-  @param[in]  ArmContext    ARM64 CPU state
-
-  @retval translation result
-**/
-VOID *
-DbtExecute (
-  IN DBT_CONTEXT      *Context,
-  IN DBT_ARM64_CONTEXT *ArmContext
-  );
-
-/**
-  Free DBT context
-
-  @param[in]  Context       DBT context
-**/
 VOID
 DbtFreeContext (
   IN DBT_CONTEXT  *Context

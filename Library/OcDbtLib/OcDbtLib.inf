@@ -31,6 +31,8 @@
 [LibraryClasses]
   BaseLib
   BaseMemoryLib
+  DebugLib
+  MemoryAllocationLib
   UefiLib
   OcMemoryLib
 
