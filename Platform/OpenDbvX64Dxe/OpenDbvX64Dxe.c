@@ -34,7 +34,7 @@
 //
 #define ARM64_THREAD_STATE_FLAVOR  6
 
-STATIC DBT_CONTEXT  *gDbtContext = NULL;
+STATIC DBT_CONTEXT  *gDbtContext     = NULL;
 STATIC EFI_HANDLE   gInstallerDevice = NULL;
 
 STATIC
@@ -308,6 +308,10 @@ DirectLoadKernel (
       L"\\kernel",
       L"\\SharedSupport\\kernel",
       L"\\System\\Library\\Kernels\\kernel",
+      L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac15j",
+      L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac16j",
+      L"\\AssetData\\boot\\kernelcache.release.mac15j",
+      L"\\AssetData\\boot\\kernelcache.release.mac16j",
       NULL
     };
     UINTN  PathIndex;
@@ -746,18 +750,22 @@ OcGetDbtBootEntries (
   }
 
   //
-  // Also look for macOS 27+ installer kernel in SharedSupport (DirectKernel bypass)
+  // Look for macOS 27+ kernel/kernelcache in SharedSupport
   //
   if (EntryCount == 0) {
     STATIC CONST CHAR16  *KernelPaths[] = {
       L"\\kernel",
       L"\\SharedSupport\\kernel",
       L"\\System\\Library\\Kernels\\kernel",
+      L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac15j",
+      L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac16j",
+      L"\\AssetData\\boot\\kernelcache.release.mac15j",
+      L"\\AssetData\\boot\\kernelcache.release.mac16j",
       NULL
     };
 
     for (Index = 0; KernelPaths[Index] != NULL; Index++) {
-      DEBUG ((DEBUG_INFO, "DBT: Looking for DirectKernel at %s\n", KernelPaths[Index]));
+      DEBUG ((DEBUG_INFO, "DBT: Looking for kernel at %s\n", KernelPaths[Index]));
       Status = RootDirectory->Open (
                               RootDirectory,
                               &BootDirectory,
@@ -774,9 +782,80 @@ OcGetDbtBootEntries (
           if (FileInfo != NULL) {
             BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
             if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) == 0) {
-              DEBUG ((DEBUG_INFO, "DBT: Found installer kernel at %s, EntryCount++\n", KernelPaths[Index]));
+              DEBUG ((DEBUG_INFO, "DBT: Found kernel at %s, EntryCount++\n", KernelPaths[Index]));
               ++EntryCount;
               IsMacSoftwareUpdate = TRUE;
+            }
+            FreePool (FileInfo);
+          }
+        }
+        BootDirectory->Close (BootDirectory);
+        if (EntryCount > 0) {
+          break;
+        }
+      }
+    }
+  }
+
+  //
+  // Also scan SharedSupport AssetData/boot dir for kernelcache files
+  //
+  if (EntryCount == 0) {
+    STATIC CONST CHAR16  *KernelDirs[] = {
+      L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot",
+      L"\\AssetData\\boot",
+      NULL
+    };
+
+    for (Index = 0; KernelDirs[Index] != NULL; Index++) {
+      Status = RootDirectory->Open (
+                              RootDirectory,
+                              &BootDirectory,
+                              (CHAR16 *)KernelDirs[Index],
+                              EFI_FILE_MODE_READ,
+                              0
+                              );
+      if (!EFI_ERROR (Status)) {
+        //
+        // Enumerate files in this directory looking for kernelcache.*
+        //
+        FileInfoSize = 0;
+        BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, NULL);
+        if (FileInfoSize > 0) {
+          // Check if it's actually a directory
+          FileInfo = AllocatePool (FileInfoSize);
+          if (FileInfo != NULL) {
+            BootDirectory->GetInfo (BootDirectory, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
+            if ((FileInfo->Attribute & EFI_FILE_DIRECTORY) != 0) {
+              UINTN   DirBufSize = SIZE_256KB;
+              VOID    *DirBuf = AllocatePool (DirBufSize);
+              if (DirBuf != NULL) {
+                while (TRUE) {
+                  UINTN  ReadSize = DirBufSize;
+                  Status = BootDirectory->Read (BootDirectory, &ReadSize, DirBuf);
+                  if (EFI_ERROR (Status) || ReadSize == 0) {
+                    break;
+                  }
+                  EFI_FILE_INFO  *DirEntry = (EFI_FILE_INFO *)DirBuf;
+                  while ((UINTN)DirEntry < (UINTN)DirBuf + ReadSize) {
+                    if ((DirEntry->Attribute & EFI_FILE_DIRECTORY) == 0
+                        && StrnCmp (DirEntry->FileName, L"kernelcache.", 12) == 0) {
+                      DEBUG ((DEBUG_INFO, "DBT: Found kernelcache: %s\n", DirEntry->FileName));
+                      EntryCount = 1;
+                      IsMacSoftwareUpdate = TRUE;
+                      break;
+                    }
+                    if (DirEntry->Size == 0) {
+                      break;
+                    }
+                    DirEntry = (EFI_FILE_INFO *)((UINT8 *)DirEntry + DirEntry->Size);
+                  }
+                  if (EntryCount > 0) {
+                    break;
+                  }
+                }
+                FreePool (DirBuf);
+              }
             }
             FreePool (FileInfo);
           }
@@ -1017,7 +1096,7 @@ OpenDbvX64EntryPoint (
 {
   EFI_STATUS  Status;
 
-  Status = DbtInitContext (&gDbtContext, 0x100000);
+  Status = DbtInitContext (&gDbtContext, 0x1000000);
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "DBT: Failed to initialize DBT context - %r\n", Status));
     return Status;
