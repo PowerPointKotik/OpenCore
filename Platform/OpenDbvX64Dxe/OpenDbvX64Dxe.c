@@ -1023,18 +1023,19 @@ OcGetDbtBootEntries (
     NewEntries[0].UnmanagedBootAction             = DbtBootEntryAction;
     NewEntries[0].UnmanagedBootGetFinalDevicePath = NULL;
     //
-    // UnmanagedDevicePath must be non-NULL for the entry to be created.
-    // Provide a minimal device path node referencing the installer volume.
+    // Provide a minimal valid device path (vendor node + end).
+    // DuplicateDevicePath requires valid device path with end node.
     //
     {
-      EFI_DEVICE_PATH_PROTOCOL  *Dp;
-      Dp = AllocateZeroPool (sizeof (EFI_DEVICE_PATH_PROTOCOL) + sizeof (EFI_DEVICE_PATH_PROTOCOL));
-      if (Dp != NULL) {
-        Dp[0].Type    = HARDWARE_DEVICE_PATH;
-        Dp[0].SubType = HW_VENDOR_DP;
-        SetDevicePathNodeLength (&Dp[0], sizeof (EFI_DEVICE_PATH_PROTOCOL));
-        SetDevicePathEndNode (&Dp[1]);
-        NewEntries[0].UnmanagedDevicePath = Dp;
+      UINT8  *Buf;
+      Buf = AllocateZeroPool (sizeof (EFI_DEVICE_PATH_PROTOCOL) * 2);
+      if (Buf != NULL) {
+        EFI_DEVICE_PATH_PROTOCOL  *Node = (EFI_DEVICE_PATH_PROTOCOL *)Buf;
+        Node->Type    = HARDWARE_DEVICE_PATH;
+        Node->SubType = HW_VENDOR_DP;
+        SetDevicePathNodeLength (Node, sizeof (EFI_DEVICE_PATH_PROTOCOL));
+        SetDevicePathEndNode ((EFI_DEVICE_PATH_PROTOCOL *)(Buf + sizeof (EFI_DEVICE_PATH_PROTOCOL)));
+        NewEntries[0].UnmanagedDevicePath = (EFI_DEVICE_PATH_PROTOCOL *)Buf;
       }
     }
 
