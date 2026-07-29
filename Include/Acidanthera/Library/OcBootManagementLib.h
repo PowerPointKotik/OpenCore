@@ -2303,10 +2303,10 @@ OcResetSystem (
   );
 
 //
-// Global DBT fallback: set by OpenDbvX64Dxe when DBT is available.
-// Called as fallback by OcLoadBootEntry when LoadImage fails with EFI_UNSUPPORTED.
-// Signature matches OC_BOOT_UNMANAGED_ACTION.
+// DBT fallback protocol GUID. Installed by OpenDbvX64Dxe when DBT is available.
+// The protocol interface is OC_BOOT_UNMANAGED_ACTION — called directly.
 //
-extern OC_BOOT_UNMANAGED_ACTION  gOcDbtFallbackAction;
+#define OC_DBT_FALLBACK_PROTOCOL_GUID  \
+  { 0x9E23F8A1, 0x4B6D, 0x4E1C, { 0xA7, 0xF3, 0x5D, 0xE2, 0x8C, 0x91, 0xB4, 0x76 } }
 
 #endif // OC_BOOT_MANAGEMENT_LIB_H

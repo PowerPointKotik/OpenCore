@@ -1178,7 +1178,7 @@ OpenDbvX64EntryPoint (
 {
   EFI_STATUS  Status;
 
-  Status = DbtInitContext (&gDbtContext, 0x1000000);
+  Status = DbtInitContext (&gDbtContext, 0x400000);
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "DBT: Failed to initialize DBT context - %r\n", Status));
     return Status;
@@ -1187,9 +1187,22 @@ OpenDbvX64EntryPoint (
   DEBUG ((DEBUG_INFO, "DBT: ARM64->x86_64 initialized for DirectKernel\n"));
 
   //
-  // Set DBT fallback in boot management library
+  // Install DBT fallback protocol — GUID + function pointer
   //
-  gOcDbtFallbackAction = DbtBootEntryAction;
+  {
+    EFI_GUID  DbtGuid = OC_DBT_FALLBACK_PROTOCOL_GUID;
+    Status = gBS->InstallMultipleProtocolInterfaces (
+                     &ImageHandle,
+                     &DbtGuid,
+                     (VOID *)(UINTN)DbtBootEntryAction,
+                     NULL
+                     );
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "DBT: Failed to install fallback protocol - %r\n", Status));
+    } else {
+      DEBUG ((DEBUG_INFO, "DBT: Fallback protocol installed\n"));
+    }
+  }
 
   //
   // Install boot entry protocol to provide installer entries
