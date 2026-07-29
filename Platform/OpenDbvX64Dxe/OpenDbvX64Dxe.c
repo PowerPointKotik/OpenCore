@@ -847,6 +847,80 @@ OcGetDbtBootEntries (
     }
   }
 
+  //
+  // Fallback: if boot.efi exists and is ARM64, create DBT entry anyway.
+  // DirectLoadKernel will search for kernel at boot time.
+  //
+  if (EntryCount == 0) {
+    EFI_FILE_PROTOCOL  *BootEfi;
+    Status = RootDirectory->Open (
+                             RootDirectory,
+                             &BootEfi,
+                             L"\\System\\Library\\CoreServices\\boot.efi",
+                             EFI_FILE_MODE_READ,
+                             0
+                             );
+    if (!EFI_ERROR (Status)) {
+      UINT8  Header[128];
+      UINTN  ReadSize = sizeof (Header);
+      Status = BootEfi->Read (BootEfi, &ReadSize, Header);
+      if (!EFI_ERROR (Status) && ReadSize >= 64) {
+        if (*(UINT16 *)Header == 0x5A4D) {
+          UINT32  PeOffset = *(UINT32 *)(Header + 0x3C);
+          if ((PeOffset + 8) < ReadSize) {
+            if (*(UINT32 *)(Header + PeOffset) == 0x00004550) {
+              UINT16  Machine = *(UINT16 *)(Header + PeOffset + 4);
+              if (Machine == 0xAA64) {
+                DEBUG ((DEBUG_INFO, "DBT: ARM64 boot.efi detected, searching SharedSupport for kernel\n"));
+                gInstallerDevice = Device;
+                //
+                // Search for SharedSupport volume with kernel
+                //
+                {
+                  EFI_HANDLE  *Hb;
+                  UINTN       Hc;
+                  Status = gBS->LocateHandleBuffer (
+                                  ByProtocol,
+                                  &gEfiSimpleFileSystemProtocolGuid,
+                                  NULL,
+                                  &Hc,
+                                  &Hb
+                                  );
+                  if (!EFI_ERROR (Status) && Hc > 0) {
+                    for (UINTN Idx = 0; Idx < Hc; Idx++) {
+                      if (Hb[Idx] == Device) {
+                        continue;
+                      }
+                      EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+                      Status = gBS->HandleProtocol (Hb[Idx], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs);
+                      if (!EFI_ERROR (Status)) {
+                        EFI_FILE_PROTOCOL  *SRoot;
+                        Status = Fs->OpenVolume (Fs, &SRoot);
+                        if (!EFI_ERROR (Status)) {
+                          if (IsSharedSupportVolume (SRoot)) {
+                            gInstallerDevice = Hb[Idx];
+                            DEBUG ((DEBUG_INFO, "DBT: Found SharedSupport volume for ARM64 installer\n"));
+                            SRoot->Close (SRoot);
+                            break;
+                          }
+                          SRoot->Close (SRoot);
+                        }
+                      }
+                    }
+                    FreePool (Hb);
+                  }
+                }
+                EntryCount = 1;
+                IsMacSoftwareUpdate = TRUE;
+              }
+            }
+          }
+        }
+      }
+      BootEfi->Close (BootEfi);
+    }
+  }
+
   RootDirectory->Close (RootDirectory);
 
   if (EntryCount > 0) {
@@ -867,8 +941,23 @@ OcGetDbtBootEntries (
     // since boot.efi/kernel are ARM64 and EDK2 LoadImage will reject them.
     //
     DbtSetBootInfo (gDbtContext, gInstallerDevice != NULL ? gInstallerDevice : Device, L"\\SharedSupport\\kernel");
-    NewEntries[0].UnmanagedBootAction = DbtBootEntryAction;
+    NewEntries[0].UnmanagedBootAction             = DbtBootEntryAction;
     NewEntries[0].UnmanagedBootGetFinalDevicePath = NULL;
+    //
+    // UnmanagedDevicePath must be non-NULL for the entry to be created.
+    // Provide a minimal device path node referencing the installer volume.
+    //
+    {
+      EFI_DEVICE_PATH_PROTOCOL  *Dp;
+      Dp = AllocateZeroPool (sizeof (EFI_DEVICE_PATH_PROTOCOL) + sizeof (EFI_DEVICE_PATH_PROTOCOL));
+      if (Dp != NULL) {
+        Dp[0].Type    = HARDWARE_DEVICE_PATH;
+        Dp[0].SubType = HW_VENDOR_DP;
+        SetDevicePathNodeLength (&Dp[0], sizeof (EFI_DEVICE_PATH_PROTOCOL));
+        SetDevicePathEndNode (&Dp[1]);
+        NewEntries[0].UnmanagedDevicePath = Dp;
+      }
+    }
 
     *Entries    = NewEntries;
     *NumEntries = EntryCount;
