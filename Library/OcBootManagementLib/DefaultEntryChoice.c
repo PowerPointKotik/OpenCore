@@ -1565,6 +1565,7 @@ InternalLoadBootEntry (
   StorageHandle      = NULL;
   StoragePath        = NULL;
   *CustomFreeContext = NULL;
+  DevicePath         = NULL;
   ZeroMem (&DmgPreloadContext, sizeof (DmgPreloadContext));
 
   //
@@ -1612,6 +1613,10 @@ InternalLoadBootEntry (
     }
   } else if (BootEntry->CustomRead == NULL) {
     DevicePath = BootEntry->DevicePath;
+  }
+
+  if (DevicePath == NULL) {
+    return EFI_UNSUPPORTED;
   }
 
   DEBUG_CODE_BEGIN ();
