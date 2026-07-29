@@ -2628,7 +2628,11 @@ OcLoadBootEntry (
       BootEntry->CustomFree (CustomFreeContext);
     }
   } else {
-    DEBUG ((DEBUG_WARN, "OCB: LoadImage failed - %r\n", Status));
+    if (Status == EFI_UNSUPPORTED) {
+      DEBUG ((DEBUG_WARN, "OCB: LoadImage failed - Unsupported (possible ARM64 binary on x86_64)\n"));
+    } else {
+      DEBUG ((DEBUG_WARN, "OCB: LoadImage failed - %r\n", Status));
+    }
   }
 
   return Status;
