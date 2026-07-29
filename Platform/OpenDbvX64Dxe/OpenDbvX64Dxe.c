@@ -562,6 +562,88 @@ DbtBootEntryAction (
   IN      EFI_DEVICE_PATH_PROTOCOL  *DevicePath
   )
 {
+  //
+  // Fallback: scan all filesystems for kernel if no boot info yet
+  //
+  if ((gDbtContext != NULL) && (DbtGetInstallerDevice (gDbtContext) == NULL)) {
+    EFI_HANDLE  *Handles;
+    UINTN       Count;
+    EFI_STATUS  ScanStatus;
+
+    ScanStatus = gBS->LocateHandleBuffer (
+                        ByProtocol,
+                        &gEfiSimpleFileSystemProtocolGuid,
+                        NULL,
+                        &Count,
+                        &Handles
+                        );
+    if (!EFI_ERROR (ScanStatus) && Count > 0) {
+      for (UINTN Idx = 0; Idx < Count; Idx++) {
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+        EFI_FILE_PROTOCOL                *Root;
+        ScanStatus = gBS->HandleProtocol (Handles[Idx], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs);
+        if (!EFI_ERROR (ScanStatus)) {
+          ScanStatus = Fs->OpenVolume (Fs, &Root);
+          if (!EFI_ERROR (ScanStatus)) {
+            //
+            // Try kernel paths or Golden Gate marker
+            //
+            EFI_FILE_PROTOCOL  *KernelFile;
+            STATIC CONST CHAR16  *Paths[] = {
+              L"\\kernel",
+              L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac15j",
+              L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac16j",
+              NULL
+            };
+            for (UINTN Pi = 0; Paths[Pi] != NULL; Pi++) {
+              ScanStatus = Root->Open (Root, &KernelFile, (CHAR16 *)Paths[Pi], EFI_FILE_MODE_READ, 0);
+              if (!EFI_ERROR (ScanStatus)) {
+                KernelFile->Close (KernelFile);
+                gInstallerDevice = Handles[Idx];
+                DbtSetBootInfo (gDbtContext, Handles[Idx], Paths[Pi]);
+                DEBUG ((DEBUG_INFO, "DBT: Fallback found kernel at %s\n", Paths[Pi]));
+                break;
+              }
+            }
+
+            if (DbtGetInstallerDevice (gDbtContext) == NULL && IsGoldenGateInstaller (Root)) {
+              gInstallerDevice = Handles[Idx];
+              //
+              // Search all handles for SharedSupport
+              //
+              for (UINTN Ji = 0; Ji < Count; Ji++) {
+                if (Ji == Idx) continue;
+                EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs2;
+                EFI_FILE_PROTOCOL                *SRoot;
+                ScanStatus = gBS->HandleProtocol (Handles[Ji], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs2);
+                if (!EFI_ERROR (ScanStatus)) {
+                  ScanStatus = Fs2->OpenVolume (Fs2, &SRoot);
+                  if (!EFI_ERROR (ScanStatus)) {
+                    if (IsSharedSupportVolume (SRoot)) {
+                      gInstallerDevice = Handles[Ji];
+                      DbtSetBootInfo (gDbtContext, Handles[Ji], L"\\kernel");
+                      DEBUG ((DEBUG_INFO, "DBT: Fallback found SharedSupport, kernel path \\kernel\n"));
+                      SRoot->Close (SRoot);
+                      SRoot = NULL;
+                      break;
+                    }
+                    SRoot->Close (SRoot);
+                  }
+                }
+              }
+              DbtSetBootInfo (gDbtContext, gInstallerDevice, L"\\SharedSupport\\kernel");
+            }
+            Root->Close (Root);
+          }
+        }
+        if (DbtGetInstallerDevice (gDbtContext) != NULL) {
+          break;
+        }
+      }
+      FreePool (Handles);
+    }
+  }
+
   return DirectLoadKernel (PickerContext);
 }
 
