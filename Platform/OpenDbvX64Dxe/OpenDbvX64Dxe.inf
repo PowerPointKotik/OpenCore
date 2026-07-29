@@ -43,6 +43,7 @@
   UefiBootServicesTableLib
   UefiDriverEntryPoint
   OcBootManagementLib
+  OcCompressionLib
   OcDbtLib
   OcAppleKernelLib
   OcMachoLib

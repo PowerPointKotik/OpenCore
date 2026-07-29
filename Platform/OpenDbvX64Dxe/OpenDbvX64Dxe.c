@@ -26,6 +26,8 @@
 #include <Library/OcMemoryLib.h>
 #include <Library/OcDeviceTreeLib.h>
 
+#include "zlib/zlib.h"
+
 #include <Protocol/OcBootEntry.h>
 #include <Protocol/SimpleFileSystem.h>
 
@@ -70,8 +72,9 @@ ReadKernelFromZip (
   UINT32             CentralDirSize;
   UINT16             TotalEntries;
   UINTN              I;
-  UINT32             LocalOffset  = 0;
-  UINT32             UncompSize   = 0;
+  UINT32             LocalOffset     = 0;
+  UINT32             UncompSize      = 0;
+  UINT32             CompressedSize  = 0;
   UINT16             Method       = 0;
   UINT16             NameLen;
   UINT16             ExtraLen;
@@ -152,6 +155,33 @@ ReadKernelFromZip (
   if (EocdOffset == 0 || CentralDirOffset == 0) {
     ZipFile->Close (ZipFile);
     return NULL;
+  }
+
+  //
+  // If 32-bit CD offset is 0xFFFFFFFF, use ZIP64 EOCD
+  //
+  if (CentralDirOffset == 0xFFFFFFFFU) {
+    UINT8   Zip64LocBuf[20];
+    UINT64  Zip64EocdOff;
+
+    Status = ZipFile->SetPosition (ZipFile, EocdOffset - 20);
+    if (!EFI_ERROR (Status)) {
+      ReadSize = 20;
+      Status = ZipFile->Read (ZipFile, &ReadSize, Zip64LocBuf);
+      if (!EFI_ERROR (Status) && (*(UINT32 *)Zip64LocBuf == 0x07064B50U)) {
+        Zip64EocdOff = *(UINT64 *)(Zip64LocBuf + 8);
+        UINT8   Zip64Buf[56];
+        Status = ZipFile->SetPosition (ZipFile, Zip64EocdOff);
+        if (!EFI_ERROR (Status)) {
+          ReadSize = 56;
+          Status = ZipFile->Read (ZipFile, &ReadSize, Zip64Buf);
+          if (!EFI_ERROR (Status) && (*(UINT32 *)Zip64Buf == 0x06064B50U)) {
+            CentralDirSize   = (UINT32)*(UINT64 *)(Zip64Buf + 40);
+            CentralDirOffset = (UINT32)*(UINT64 *)(Zip64Buf + 48);
+          }
+        }
+      }
+    }
   }
 
   //
@@ -241,6 +271,29 @@ ReadKernelFromZip (
   UINT32  DataOffset = LocalOffset + 30 + NameLen + ExtraLen;
 
   if (Method == ZIP_METHOD_STORED) {
+    CompressedSize = UncompSize;
+  } else {
+    CompressedSize = *(UINT32 *)(LocalBuf + 18);
+    //
+    // Check for ZIP64 extra field if compressed size is 0xFFFFFFFF
+    //
+    if ((CompressedSize == 0xFFFFFFFFU) && (ExtraLen >= 20)) {
+      UINT8   *Extra = (UINT8 *)LocalBuf + 30 + NameLen;
+      UINT16  Remaining = ExtraLen;
+      while (Remaining >= 4) {
+        UINT16  Tag  = *(UINT16 *)Extra;
+        UINT16  Size = *(UINT16 *)(Extra + 2);
+        if (Tag == 0x0001 && Size >= 16) {  // ZIP64 extra field
+          CompressedSize = (UINT32)*(UINT64 *)(Extra + 4 + 8);  // compressed_size after uncompressed_size
+          break;
+        }
+        Remaining = (UINT16)(Remaining - 4 - Size);
+        Extra += 4 + Size;
+      }
+    }
+  }
+
+  if (Method == ZIP_METHOD_STORED) {
     //
     // Read uncompressed data directly
     //
@@ -264,7 +317,50 @@ ReadKernelFromZip (
       }
     }
   } else {
-    DEBUG ((DEBUG_INFO, "DBT: Kernelcache is DEFLATE compressed (method %u) — not yet supported\n", Method));
+    //
+    // DEFLATE — decompress using zlib inflate
+    //
+    UINT8  *CompBuf = AllocatePool (CompressedSize);
+    if (CompBuf != NULL) {
+      Status = ZipFile->SetPosition (ZipFile, DataOffset);
+      if (!EFI_ERROR (Status)) {
+        ReadSize = CompressedSize;
+        Status = ZipFile->Read (ZipFile, &ReadSize, CompBuf);
+        if (!EFI_ERROR (Status)) {
+          Result = AllocatePool (UncompSize + 1);
+          if (Result != NULL) {
+            z_stream  Strm;
+            INT32     Ret;
+
+            ZeroMem (&Strm, sizeof (Strm));
+            Strm.next_in   = CompBuf;
+            Strm.avail_in  = (UINT32)ReadSize;
+            Strm.next_out  = Result;
+            Strm.avail_out = UncompSize;
+
+            Ret = inflateInit2 (&Strm, -MAX_WBITS);
+            if (Ret == Z_OK) {
+              Ret = inflate (&Strm, Z_FINISH);
+              inflateEnd (&Strm);
+              if ((Ret == Z_STREAM_END) && (Strm.total_out == UncompSize)) {
+                Result[UncompSize] = 0;
+                *OutSize = UncompSize;
+                DEBUG ((DEBUG_INFO, "DBT: Decompressed kernelcache %u bytes (deflate)\n", UncompSize));
+              } else {
+                DEBUG ((DEBUG_INFO, "DBT: inflate failed ret=%d total_out=%lu expected=%u\n", Ret, (UINT64)Strm.total_out, UncompSize));
+                FreePool (Result);
+                Result = NULL;
+              }
+            } else {
+              DEBUG ((DEBUG_INFO, "DBT: inflateInit2 failed ret=%d\n", Ret));
+              FreePool (Result);
+              Result = NULL;
+            }
+          }
+        }
+      }
+      FreePool (CompBuf);
+    }
   }
 
   ZipFile->Close (ZipFile);
