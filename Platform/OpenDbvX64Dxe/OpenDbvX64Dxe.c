@@ -34,8 +34,244 @@
 //
 #define ARM64_THREAD_STATE_FLAVOR  6
 
+//
+// ZIP format constants
+//
+#define ZIP_LOCAL_FILE_SIGNATURE   0x04034B50U
+#define ZIP_EOCD_SIGNATURE         0x06054B50U
+#define ZIP_METHOD_STORED          0
+#define ZIP_METHOD_DEFLATED        8
+
 STATIC DBT_CONTEXT  *gDbtContext     = NULL;
 STATIC EFI_HANDLE   gInstallerDevice = NULL;
+
+//
+// Read kernelcache from ZIP file.
+// Returns allocated buffer with kernel data, or NULL.
+//
+STATIC
+VOID *
+ReadKernelFromZip (
+  IN  EFI_FILE_PROTOCOL  *RootDir,
+  IN  CONST CHAR16       *ZipPath,
+  IN  CONST CHAR16       *EntryName,
+  OUT UINT32             *OutSize
+  )
+{
+  EFI_STATUS         Status;
+  EFI_FILE_PROTOCOL  *ZipFile;
+  UINT8              EocdBuf[128];
+  UINTN              ReadSize;
+  UINT64             FileSize;
+  EFI_FILE_INFO      *Info;
+  UINTN              InfoSize;
+  UINT32             EocdOffset;
+  UINT32             CentralDirOffset;
+  UINT32             CentralDirSize;
+  UINT16             TotalEntries;
+  UINTN              I;
+  UINT32             LocalOffset  = 0;
+  UINT32             CompSize     = 0;
+  UINT32             UncompSize   = 0;
+  UINT16             Method       = 0;
+  UINT16             NameLen;
+  UINT16             ExtraLen;
+  UINT8              *Result      = NULL;
+  BOOLEAN            EntryFound   = FALSE;
+
+  *OutSize = 0;
+
+  Status = RootDir->Open (RootDir, &ZipFile, (CHAR16 *)ZipPath, EFI_FILE_MODE_READ, 0);
+  if (EFI_ERROR (Status)) {
+    return NULL;
+  }
+
+  //
+  // Get file size
+  //
+  InfoSize = 0;
+  ZipFile->GetInfo (ZipFile, &gEfiFileInfoGuid, &InfoSize, NULL);
+  Info = AllocatePool (InfoSize);
+  if (Info == NULL) {
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+  Status = ZipFile->GetInfo (ZipFile, &gEfiFileInfoGuid, &InfoSize, Info);
+  if (EFI_ERROR (Status)) {
+    FreePool (Info);
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+  FileSize = Info->FileSize;
+  FreePool (Info);
+
+  if (FileSize < sizeof (EocdBuf)) {
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+
+  //
+  // Read EOCD from end of file
+  //
+  ReadSize = sizeof (EocdBuf);
+  Status = ZipFile->SetPosition (ZipFile, FileSize - sizeof (EocdBuf));
+  if (EFI_ERROR (Status)) {
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+  Status = ZipFile->Read (ZipFile, &ReadSize, EocdBuf);
+  if (EFI_ERROR (Status)) {
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+
+  //
+  // Find EOCD signature
+  //
+  EocdOffset = 0;
+  for (I = 0; I + 4 < ReadSize; I++) {
+    if (*(UINT32 *)(EocdBuf + I) == ZIP_EOCD_SIGNATURE) {
+      EocdOffset = (UINT32)(FileSize - sizeof (EocdBuf) + I);
+      //
+      // EOCD fields at this offset:
+      // +0: signature(4)
+      // +4: disk_number(2)
+      // +6: disk_cd(2)
+      // +8: entries_on_disk(2)
+      // +10: total_entries(2)
+      // +12: cd_size(4)
+      // +16: cd_offset(4)
+      // +20: comment_len(2)
+      //
+      TotalEntries     = *(UINT16 *)(EocdBuf + I + 10);
+      CentralDirSize   = *(UINT32 *)(EocdBuf + I + 12);
+      CentralDirOffset = *(UINT32 *)(EocdBuf + I + 16);
+      break;
+    }
+  }
+
+  if (EocdOffset == 0 || CentralDirOffset == 0) {
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+
+  //
+  // Read central directory
+  //
+  UINT8  *CdBuf = AllocatePool (CentralDirSize);
+  if (CdBuf == NULL) {
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+  Status = ZipFile->SetPosition (ZipFile, CentralDirOffset);
+  if (EFI_ERROR (Status)) {
+    FreePool (CdBuf);
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+  ReadSize = CentralDirSize;
+  Status = ZipFile->Read (ZipFile, &ReadSize, CdBuf);
+  if (EFI_ERROR (Status)) {
+    FreePool (CdBuf);
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+
+  //
+  // Scan central directory for kernelcache entry
+  //
+  UINT8  *Ptr = CdBuf;
+  for (I = 0; I < TotalEntries; I++) {
+    //
+    // CFH: sig(4) ver_made(2) ver_need(2) flags(2) method(2) ...
+    // +24: comp_size(4), +28: uncomp_size(4), +32: name_len(2), +34: extra_len(2), +36: comment_len(2)
+    // +42: local_header_offset(4), +46: filename(N)
+    //
+    if (*(UINT32 *)Ptr != 0x02014B50U) {
+      break;
+    }
+    Method       = *(UINT16 *)(Ptr + 10);
+    CompSize     = *(UINT32 *)(Ptr + 20);
+    UncompSize   = *(UINT32 *)(Ptr + 24);
+    NameLen      = *(UINT16 *)(Ptr + 28);
+    ExtraLen     = *(UINT16 *)(Ptr + 30);
+    LocalOffset  = *(UINT32 *)(Ptr + 42);
+
+    if (NameLen > 0) {
+      CHAR8 *Name = (CHAR8 *)(Ptr + 46);
+      //
+      // Match kernelcache.* files
+      //
+      if ((NameLen >= 12) && (CompareMem (Name, "AssetData/boot/kernelcache.", 28) == 0)) {
+        EntryFound = TRUE;
+        DEBUG ((DEBUG_INFO, "DBT: Found kernelcache in ZIP: %a (method=%u, size=%u)\n", Name, Method, UncompSize));
+        break;
+      }
+    }
+    Ptr += 46 + NameLen + ExtraLen + *(UINT16 *)(Ptr + 32);
+  }
+  FreePool (CdBuf);
+
+  if (!EntryFound) {
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+
+  //
+  // Read local file header to get exact data offset
+  //
+  UINT8  LocalBuf[128];
+  Status = ZipFile->SetPosition (ZipFile, LocalOffset);
+  if (EFI_ERROR (Status)) {
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+  ReadSize = sizeof (LocalBuf);
+  Status = ZipFile->Read (ZipFile, &ReadSize, LocalBuf);
+  if (EFI_ERROR (Status)) {
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+
+  if (*(UINT32 *)LocalBuf != ZIP_LOCAL_FILE_SIGNATURE) {
+    ZipFile->Close (ZipFile);
+    return NULL;
+  }
+
+  NameLen  = *(UINT16 *)(LocalBuf + 26);
+  ExtraLen = *(UINT16 *)(LocalBuf + 28);
+  UINT32  DataOffset = LocalOffset + 30 + NameLen + ExtraLen;
+
+  if (Method == ZIP_METHOD_STORED) {
+    //
+    // Read uncompressed data directly
+    //
+    Result = AllocatePool (UncompSize + 1);
+    if (Result != NULL) {
+      Status = ZipFile->SetPosition (ZipFile, DataOffset);
+      if (!EFI_ERROR (Status)) {
+        ReadSize = UncompSize;
+        Status = ZipFile->Read (ZipFile, &ReadSize, Result);
+        if (!EFI_ERROR (Status) && ReadSize == UncompSize) {
+          Result[UncompSize] = 0;
+          *OutSize = UncompSize;
+          DEBUG ((DEBUG_INFO, "DBT: Read kernelcache %u bytes (stored)\n", UncompSize));
+        } else {
+          FreePool (Result);
+          Result = NULL;
+        }
+      } else {
+        FreePool (Result);
+        Result = NULL;
+      }
+    }
+  } else {
+    DEBUG ((DEBUG_INFO, "DBT: Kernelcache is DEFLATE compressed (method %u) — not yet supported\n", Method));
+  }
+
+  ZipFile->Close (ZipFile);
+  return Result;
+}
 
 STATIC
 BOOLEAN
@@ -345,28 +581,85 @@ DirectLoadKernel (
     }
 
     if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_ERROR, "DirectKernel: Failed to open kernel - %r\n", Status));
-      RootDirectory->Close (RootDirectory);
-      return Status;
+      //
+      // All direct paths failed — try ZIP extraction
+      //
+      DEBUG ((DEBUG_INFO, "DirectKernel: Direct kernel open failed — searching ZIP files\n"));
+
+      {
+        STATIC CONST CHAR16  *ZipDirs[] = {
+          L"\\com_apple_MobileAsset_MacSoftwareUpdate",
+          L"",
+          NULL
+        };
+        STATIC CONST CHAR16  *ZipNames[] = {
+          L"734ab42e23c4b7f7c262e00c8e57b3cff8e778a4.zip",
+          NULL
+        };
+
+        for (UINTN Zdi = 0; !EFI_ERROR (Status) && ZipDirs[Zdi] != NULL; Zdi++) {
+          for (UINTN Zni = 0; ZipNames[Zni] != NULL; Zni++) {
+            CHAR16  ZipPath[512];
+            if (ZipDirs[Zdi][0] != L'\0') {
+              UnicodeSPrint (ZipPath, sizeof (ZipPath), L"%s\\%s", ZipDirs[Zdi], ZipNames[Zni]);
+            } else {
+              UnicodeSPrint (ZipPath, sizeof (ZipPath), L"%s", ZipNames[Zni]);
+            }
+
+            KernelBuffer = ReadKernelFromZip (RootDirectory, ZipPath, L"kernelcache", &KernelSize);
+            if (KernelBuffer != NULL) {
+              AllocatedSize = KernelSize;
+              Is32Bit       = FALSE;
+              Status        = EFI_SUCCESS;
+              DEBUG ((DEBUG_INFO, "DirectKernel: Extracted kernel from ZIP: %u bytes\n", KernelSize));
+              //
+              // Skip the ReadAppleKernel call — we already have the raw kernel
+              //
+              goto SKIP_READ_APPLE_KERNEL;
+            }
+          }
+        }
+      }
+
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "DirectKernel: Failed to open kernel - %r\n", Status));
+        RootDirectory->Close (RootDirectory);
+        return Status;
+      }
     }
   }
 
-  KernelBuffer = NULL;
-  KernelSize = 0;
-  AllocatedSize = 0;
+SKIP_READ_APPLE_KERNEL:
+  if (!EFI_ERROR (Status) && KernelFile != NULL) {
+    KernelFile->Close (KernelFile);
+    KernelFile = NULL;
+  }
 
-  Status = ReadAppleKernel (
-            KernelFile,
-            FALSE,  // Prefer 64-bit
-            &Is32Bit,
-            &KernelBuffer,
-            &KernelSize,
-            &AllocatedSize,
-            0,    // Reserved size
-            NULL  // No digest
-            );
+  if (EFI_ERROR (Status)) {
+    RootDirectory->Close (RootDirectory);
+    return Status;
+  }
 
-  KernelFile->Close (KernelFile);
+  //
+  // If we got kernel from ZIP, skip ReadAppleKernel
+  //
+  if (AllocatedSize == 0 || KernelBuffer == NULL) {
+    Status = ReadAppleKernel (
+              KernelFile,
+              FALSE,
+              &Is32Bit,
+              &KernelBuffer,
+              &KernelSize,
+              &AllocatedSize,
+              0,
+              NULL
+              );
+
+    if (KernelFile != NULL) {
+      KernelFile->Close (KernelFile);
+    }
+  }
+
   RootDirectory->Close (RootDirectory);
 
   if (EFI_ERROR (Status)) {
