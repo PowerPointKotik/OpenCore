@@ -557,7 +557,6 @@ DirectLoadKernel (
 
 STATIC
 EFI_STATUS
-EFIAPI
 DbtBootEntryAction (
   IN OUT  OC_PICKER_CONTEXT         *PickerContext,
   IN      EFI_DEVICE_PATH_PROTOCOL  *DevicePath
@@ -1104,6 +1103,11 @@ OpenDbvX64EntryPoint (
   }
 
   DEBUG ((DEBUG_INFO, "DBT: ARM64->x86_64 initialized for DirectKernel\n"));
+
+  //
+  // Set DBT fallback in boot management library
+  //
+  gOcDbtFallbackAction = DbtBootEntryAction;
 
   //
   // Install boot entry protocol to provide installer entries

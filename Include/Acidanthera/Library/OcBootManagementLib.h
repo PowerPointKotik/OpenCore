@@ -2302,4 +2302,11 @@ OcResetSystem (
   IN CHAR16  *Mode
   );
 
+//
+// Global DBT fallback: set by OpenDbvX64Dxe when DBT is available.
+// Called as fallback by OcLoadBootEntry when LoadImage fails with EFI_UNSUPPORTED.
+// Signature matches OC_BOOT_UNMANAGED_ACTION.
+//
+extern OC_BOOT_UNMANAGED_ACTION  gOcDbtFallbackAction;
+
 #endif // OC_BOOT_MANAGEMENT_LIB_H

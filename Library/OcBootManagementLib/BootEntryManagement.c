@@ -8,6 +8,11 @@
 #include <Protocol/DevicePath.h>
 #include <Protocol/SimpleFileSystem.h>
 
+//
+// DBT fallback action — set by OpenDbvX64Dxe.
+//
+OC_BOOT_UNMANAGED_ACTION  gOcDbtFallbackAction = NULL;
+
 #include <IndustryStandard/AppleCsrConfig.h>
 
 #include <Guid/AppleVariable.h>
@@ -2628,6 +2633,11 @@ OcLoadBootEntry (
       BootEntry->CustomFree (CustomFreeContext);
     }
   } else {
+    if ((Status == EFI_UNSUPPORTED) && (gOcDbtFallbackAction != NULL)) {
+      DEBUG ((DEBUG_INFO, "OCB: LoadImage failed (%r) — trying DBT fallback\n", Status));
+      return gOcDbtFallbackAction (Context, BootEntry->DevicePath);
+    }
+
     if (Status == EFI_UNSUPPORTED) {
       DEBUG ((DEBUG_WARN, "OCB: LoadImage failed - Unsupported (possible ARM64 binary on x86_64)\n"));
     } else {
