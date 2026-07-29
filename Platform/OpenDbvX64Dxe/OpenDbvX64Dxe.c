@@ -71,7 +71,6 @@ ReadKernelFromZip (
   UINT16             TotalEntries;
   UINTN              I;
   UINT32             LocalOffset  = 0;
-  UINT32             CompSize     = 0;
   UINT32             UncompSize   = 0;
   UINT16             Method       = 0;
   UINT16             NameLen;
@@ -191,7 +190,6 @@ ReadKernelFromZip (
       break;
     }
     Method       = *(UINT16 *)(Ptr + 10);
-    CompSize     = *(UINT32 *)(Ptr + 20);
     UncompSize   = *(UINT32 *)(Ptr + 24);
     NameLen      = *(UINT16 *)(Ptr + 28);
     ExtraLen     = *(UINT16 *)(Ptr + 30);
