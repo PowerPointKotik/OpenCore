@@ -70,35 +70,71 @@ jobs:
 
       - name: CI Bootstrap
         run: |
-         # Try to select an installed Xcode from common locations in /Applications.
-         # This avoids exporting a DEVELOPER_DIR that doesn't exist on the runner.
-         SELECTED_XCODE=""
-         for candidate in /Applications/Xcode.app /Applications/Xcode-*.app /Applications/Xcode_*.app; do
-           if [ -d "$candidate" ]; then
-             echo "Selecting Xcode at $candidate"
-             sudo xcode-select -s "$candidate/Contents/Developer" || true
-             SELECTED_XCODE="$candidate"
-             break
-           fi
+         # Universal Xcode/Developer selection for macOS runners
+         # Priority order: specific Xcode (optional), Xcode.app, any Xcode-*.app, CommandLineTools
+         set -e
+         SELECTED_DEVELOPER_DIR=""
+
+         echo "Scanning for Xcode and Command Line Tools..."
+
+         CANDIDATES=(
+           "/Applications/Xcode_16.4.0.app"
+           "/Applications/Xcode.app"
+           /Applications/Xcode-*.app
+           /Applications/Xcode_*.app
+           "/Library/Developer/CommandLineTools"
+         )
+
+         for cand in "${CANDIDATES[@]}"; do
+           # Expand globs that may not match
+           for path in $cand; do
+             if [ -d "$path" ]; then
+               if [ "$(basename "$path")" = "CommandLineTools" ]; then
+                 echo "Selecting Command Line Tools at $path"
+                 sudo xcode-select -s "$path" || true
+                 SELECTED_DEVELOPER_DIR="$path"
+               else
+                 echo "Selecting Xcode at $path"
+                 sudo xcode-select -s "$path/Contents/Developer" || true
+                 SELECTED_DEVELOPER_DIR="$path/Contents/Developer"
+               fi
+               break 2
+             fi
+           done
          done
 
-         # Show what xcode-select returns, then export DEVELOPER_DIR
-         xcode_select_out=$(xcode-select -p 2>/dev/null || true)
-         echo "xcode-select -p returned: $xcode_select_out"
-         export DEVELOPER_DIR=$(xcode-select -p) 2>/dev/null || true
-         echo "Using DEVELOPER_DIR=$DEVELOPER_DIR"
-
-         # Fail fast with a clear message if DEVELOPER_DIR does not exist
-         if [ -z "$DEVELOPER_DIR" ] || [ ! -d "$DEVELOPER_DIR" ]; then
-           echo "ERROR: No usable Xcode installation found in /Applications. DEVELOPER_DIR is: '$DEVELOPER_DIR'"
-           echo "Installed /Applications contents:"
-           ls -la /Applications || true
-           exit 1
+         # Fallback: use existing xcode-select -p if it points somewhere usable
+         if [ -z "$SELECTED_DEVELOPER_DIR" ]; then
+           xs=$(xcode-select -p 2>/dev/null || true)
+           if [ -n "$xs" ] && [ -d "$xs" ]; then
+             echo "Using existing xcode-select path: $xs"
+             SELECTED_DEVELOPER_DIR="$xs"
+           fi
          fi
 
-         # Log versions for debugging
+         echo "xcode-select -p returned: $(xcode-select -p 2>/dev/null || true)"
+         export DEVELOPER_DIR="$SELECTED_DEVELOPER_DIR"
+         echo "Exported DEVELOPER_DIR=$DEVELOPER_DIR"
+
+         # Verify DEVELOPER_DIR works for xcrun/xcodebuild
+         if [ -n "$DEVELOPER_DIR" ] && [ -d "$DEVELOPER_DIR" ]; then
+           echo "Developer directory exists: $DEVELOPER_DIR"
+         else
+           echo "WARNING: No Xcode or Command Line Tools found. Trying to continue without DEVELOPER_DIR..."
+         fi
+
+         # Diagnostic logs (non-fatal)
+         echo "---- Diagnostics ----"
          xcodebuild -version || true
          clang --version || true
+         ls -la /Applications || true
+         ls -la /Library/Developer || true
+         echo "---------------------"
+
+         # If DEVELOPER_DIR is set, export it for child processes; otherwise leave unset to allow CLT fallback.
+         if [ -n "$DEVELOPER_DIR" ] && [ -d "$DEVELOPER_DIR" ]; then
+           export DEVELOPER_DIR
+         fi
 
          # Download and run the bootstrap script
          src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
