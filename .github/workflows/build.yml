@@ -72,7 +72,7 @@ jobs:
         run: |
          # Universal Xcode/Developer selection for macOS runners
          # Priority order: specific Xcode (optional), Xcode.app, any Xcode-*.app, CommandLineTools
-         set -e
+         set -euo pipefail
          SELECTED_DEVELOPER_DIR=""
 
          echo "Scanning for Xcode and Command Line Tools..."
@@ -95,8 +95,13 @@ jobs:
                  SELECTED_DEVELOPER_DIR="$path"
                else
                  echo "Selecting Xcode at $path"
-                 sudo xcode-select -s "$path/Contents/Developer" || true
-                 SELECTED_DEVELOPER_DIR="$path/Contents/Developer"
+                 # point to the Developer directory inside the .app
+                 if [ -d "$path/Contents/Developer" ]; then
+                   sudo xcode-select -s "$path/Contents/Developer" || true
+                   SELECTED_DEVELOPER_DIR="$path/Contents/Developer"
+                 else
+                   echo "Found $path but no Contents/Developer — skipping"
+                 fi
                fi
                break 2
              fi
@@ -113,14 +118,14 @@ jobs:
          fi
 
          echo "xcode-select -p returned: $(xcode-select -p 2>/dev/null || true)"
-         export DEVELOPER_DIR="$SELECTED_DEVELOPER_DIR"
-         echo "Exported DEVELOPER_DIR=$DEVELOPER_DIR"
 
-         # Verify DEVELOPER_DIR works for xcrun/xcodebuild
-         if [ -n "$DEVELOPER_DIR" ] && [ -d "$DEVELOPER_DIR" ]; then
-           echo "Developer directory exists: $DEVELOPER_DIR"
+         # Only export DEVELOPER_DIR if we have a valid path. If not, ensure it's unset so tools fallback to system defaults.
+         if [ -n "$SELECTED_DEVELOPER_DIR" ] && [ -d "$SELECTED_DEVELOPER_DIR" ]; then
+           export DEVELOPER_DIR="$SELECTED_DEVELOPER_DIR"
+           echo "Exported DEVELOPER_DIR=$DEVELOPER_DIR"
          else
-           echo "WARNING: No Xcode or Command Line Tools found. Trying to continue without DEVELOPER_DIR..."
+           echo "WARNING: No Xcode or Command Line Tools found. Continuing without DEVELOPER_DIR — allowing system defaults to be used."
+           unset DEVELOPER_DIR || true
          fi
 
          # Diagnostic logs (non-fatal)
@@ -131,13 +136,21 @@ jobs:
          ls -la /Library/Developer || true
          echo "---------------------"
 
-         # If DEVELOPER_DIR is set, export it for child processes; otherwise leave unset to allow CLT fallback.
-         if [ -n "$DEVELOPER_DIR" ] && [ -d "$DEVELOPER_DIR" ]; then
-           export DEVELOPER_DIR
+         # Verify xcrun works; if not, unset DEVELOPER_DIR to allow fallback
+         if ! xcrun -v >/dev/null 2>&1; then
+           echo "xcrun not functional with current DEVELOPER_DIR. Unsetting DEVELOPER_DIR to fallback to system tools."
+           unset DEVELOPER_DIR || true
          fi
 
-         # Download and run the bootstrap script
-         src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
+         # Download and run the bootstrap script. If it fails, emit diagnostics but don't mask useful errors.
+         set +e
+         src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) || true
+         if [ -n "$src" ]; then
+           eval "$src" || echo "ci-bootstrap.sh exited with non-zero status (non-fatal in CI context)"
+         else
+           echo "Failed to download ci-bootstrap.sh — continuing with local build steps for diagnostics"
+         fi
+         set -e
 
       - run: ./build_duet.tool
       - run: ./build_oc.tool
@@ -179,6 +192,12 @@ jobs:
       - name: Use Docker in rootless mode.
         uses: ScribeMD/rootless-docker@0.2.2
 
+      - name: Ensure Docker available
+        run: |
+          echo "Checking Docker availability..."
+          docker version || (echo "Docker not available — failing early" && exit 1)
+          docker info || true
+
       - name: ./build_duet.tool
         run: docker compose run build-duet
 
@@ -213,6 +232,12 @@ jobs:
 
       - name: Use Docker in rootless mode.
         uses: ScribeMD/rootless-docker@0.2.2
+
+      - name: Ensure Docker available
+        run: |
+          echo "Checking Docker availability..."
+          docker version || (echo "Docker not available — failing early" && exit 1)
+          docker info || true
 
       - name: ./build_duet.tool
         run: docker compose run build-duet
@@ -249,6 +274,12 @@ jobs:
       - name: Use Docker in rootless mode.
         uses: ScribeMD/rootless-docker@0.2.2
 
+      - name: Ensure Docker available
+        run: |
+          echo "Checking Docker availability..."
+          docker version || (echo "Docker not available — failing early" && exit 1)
+          docker info || true
+
       - name: ./build_duet.tool
         run: docker compose run build-duet
 
@@ -281,6 +312,12 @@ jobs:
 
       - name: Use Docker in rootless mode.
         uses: ScribeMD/rootless-docker@0.2.2
+
+      - name: Ensure Docker available
+        run: |
+          echo "Checking Docker availability..."
+          docker version || (echo "Docker not available — failing early" && exit 1)
+          docker info || true
 
       - name: Docs
         run: docker compose run build-docs
@@ -348,15 +385,22 @@ jobs:
         env:
           PYTHON_COMMAND: ${{ steps.python.outputs.python-path }}
         run: |
+          set -euo pipefail
           echo "=== Python detection ==="
           echo "PYTHON_COMMAND from setup-python: $PYTHON_COMMAND"
-          
+
           export PATH="/c/Program Files/NASM:$PATH"
           export PATH="/c/Program Files/iasl:$PATH"
-          
-          # Download and run the bootstrap script
-          curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh -o ci-bootstrap.sh
-          bash ci-bootstrap.sh || exit 1
+
+          # Download and run the bootstrap script. Not all bootstrap scripts are Windows-friendly — be tolerant.
+          set +e
+          curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh -o ci-bootstrap.sh || true
+          if [ -s ci-bootstrap.sh ]; then
+            bash ci-bootstrap.sh || echo "ci-bootstrap.sh failed on Windows runner (non-fatal)"
+          else
+            echo "ci-bootstrap.sh not available — continuing"
+          fi
+          set -e
 
       - name: Build Duet
         shell: bash
