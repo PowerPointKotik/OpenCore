@@ -639,6 +639,8 @@ DirectLoadKernel (
   //
   {
     STATIC CONST CHAR16  *FallbackPaths[] = {
+      L"\\kernelcache.decomp",
+      L"\\kernelcache.decomp",
       L"\\kernelcache.release",
       L"\\kernel",
       L"\\SharedSupport\\kernel",
@@ -1090,6 +1092,7 @@ DbtBootEntryAction (
             //
             EFI_FILE_PROTOCOL  *KernelFile;
             STATIC CONST CHAR16  *Paths[] = {
+              L"\\kernelcache.decomp",
               L"\\kernelcache.release",
               L"\\kernel",
               L"\\com_apple_MobileAsset_MacSoftwareUpdate\\AssetData\\boot\\kernelcache.release.mac15j",
@@ -1340,6 +1343,7 @@ OcGetDbtBootEntries (
   //
   if (EntryCount == 0) {
     STATIC CONST CHAR16  *KernelPaths[] = {
+      L"\\kernelcache.decomp",
       L"\\kernelcache.release",
       L"\\kernel",
       L"\\SharedSupport\\kernel",
