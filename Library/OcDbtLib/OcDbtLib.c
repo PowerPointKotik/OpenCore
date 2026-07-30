@@ -155,11 +155,13 @@ STATIC VOID EmitLoadRcx (UINT8 **P, UINT32 Off) {
 }
 
 // MOV [RBX+off], RCX — store RCX to context
+#if 0
 STATIC VOID EmitStoreRcx (UINT8 **P, UINT32 Off) {
   EmitRexW(P); EmitByte(P, 0x89);  // MOV r/m64, r64
   if (Off < 128) { EmitByte(P, 0x4B); EmitByte(P, (UINT8)Off); }
   else { EmitByte(P, 0x8B); EmitDword(P, Off); }
 }
+#endif
 
 // =========== Prologue / Epilogue ===========
 STATIC UINTN EmitPrologue (UINT8 **P) {
