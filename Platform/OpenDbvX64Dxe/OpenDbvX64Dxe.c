@@ -1032,6 +1032,7 @@ DbtBootEntryAction (
   IN      EFI_DEVICE_PATH_PROTOCOL  *DevicePath
   )
 {
+  DEBUG ((DEBUG_INFO, "DBT: DbtBootEntryAction called — starting DirectKernel\n"));
   //
   // Fallback: scan all filesystems for kernel if no boot info yet
   //
@@ -1609,20 +1610,16 @@ OcGetDbtBootEntries (
     NewEntries[0].UnmanagedBootAction             = DbtBootEntryAction;
     NewEntries[0].UnmanagedBootGetFinalDevicePath = NULL;
     //
-    // Provide a minimal valid device path (vendor node + end).
-    // DuplicateDevicePath requires valid device path with end node.
+    // Provide a minimal valid device path (single end node).
+    // Must be non-NULL for entry creation.
     //
     {
-      UINT8  *Buf;
-      Buf = AllocateZeroPool (sizeof (EFI_DEVICE_PATH_PROTOCOL) * 2);
-      if (Buf != NULL) {
-        EFI_DEVICE_PATH_PROTOCOL  *Node = (EFI_DEVICE_PATH_PROTOCOL *)Buf;
-        Node->Type    = HARDWARE_DEVICE_PATH;
-        Node->SubType = HW_VENDOR_DP;
-        SetDevicePathNodeLength (Node, sizeof (EFI_DEVICE_PATH_PROTOCOL));
-        SetDevicePathEndNode ((EFI_DEVICE_PATH_PROTOCOL *)(Buf + sizeof (EFI_DEVICE_PATH_PROTOCOL)));
-        NewEntries[0].UnmanagedDevicePath = (EFI_DEVICE_PATH_PROTOCOL *)Buf;
+      EFI_DEVICE_PATH_PROTOCOL  *Dp;
+      Dp = AllocateZeroPool (sizeof (EFI_DEVICE_PATH_PROTOCOL));
+      if (Dp != NULL) {
+        SetDevicePathEndNode (Dp);
       }
+      NewEntries[0].UnmanagedDevicePath = Dp;
     }
 
     *Entries    = NewEntries;
@@ -1689,7 +1686,8 @@ OpenDbvX64EntryPoint (
     return Status;
   }
 
-  DEBUG ((DEBUG_INFO, "DBT: ARM64->x86_64 initialized for DirectKernel\n"));
+  DEBUG ((DEBUG_INFO, "DBT: ARM64->x86_64 initialized for DirectKernel (CodeBuf=%p size=%u ctx=%p)\n",
+          gDbtContext->TranslatedCode, 0x100000, gDbtContext));
 
   //
   // Install DBT fallback protocol — GUID + function pointer
