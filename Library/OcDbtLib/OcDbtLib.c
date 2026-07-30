@@ -102,33 +102,27 @@ STATIC VOID EmitXorRaxMem (UINT8 **P, UINT32 Off) {
   else { EmitByte(P, 0x83); EmitDword(P, Off); }
 }
 
+#if 0  // reserved for future use
 // CMP RAX, [RBX+off] — sets x86 flags
 STATIC VOID EmitCmpRaxMem (UINT8 **P, UINT32 Off) {
-  EmitRexW(P); EmitByte(P, 0x3B);  // CMP r64, r/m64
+  EmitRexW(P); EmitByte(P, 0x3B);
   if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
   else { EmitByte(P, 0x83); EmitDword(P, Off); }
 }
 
-// MOV [RBX+off], imm32 — store immediate to memory
 STATIC VOID EmitStoreImm (UINT8 **P, UINT32 Off, UINT32 Val) {
-  EmitByte(P, 0xC7);  // MOV r/m32, imm32
+  EmitByte(P, 0xC7);
   if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
   else { EmitByte(P, 0x83); EmitDword(P, Off); }
   EmitDword(P, Val);
 }
 
-// Save NZCV from x86 EFLAGS to PSTATE[31:28]
 STATIC VOID EmitSaveNzcv (UINT8 **P) {
-  // LAHF: loads SF:ZF:0:AF:0:PF:1:CF into AH
-  // AH layout: [SF, ZF, 0, AF, 0, PF, 1, CF]
-  // Want PSTATE: [N, Z, C, V, ...]
-  // N = SF, Z = ZF, C = CF, V = OF (need separate compute)
-  EmitByte(P, 0x9F);  // LAHF
-  // Now AH = SF:ZF:0:AF:0:PF:1:CF
-  // We'll store it and extract bits
-  // MOV [RBX+PSTATE], AH low byte for N,Z,C storage
-  // Simplified: just save SF (bit7) and ZF (bit6) and CF (bit0)
+  EmitByte(P, 0x9F);
 }
+
+STATIC VOID EmitRet (UINT8 **P) { EmitByte(P, 0xC3); }
+#endif
 
 // MOV RAX, imm64
 STATIC VOID EmitMovImm   (UINT8 **P, UINT64 Val) {
@@ -137,9 +131,6 @@ STATIC VOID EmitMovImm   (UINT8 **P, UINT64 Val) {
 
 // NOP
 STATIC VOID EmitNop (UINT8 **P) { EmitByte(P, 0x90); }
-
-// RET
-STATIC VOID EmitRet (UINT8 **P) { EmitByte(P, 0xC3); }
 
 // ADD RAX, imm32
 STATIC VOID EmitAddImm (UINT8 **P, UINT32 Imm) {
