@@ -70,7 +70,7 @@ ReadKernelFromZip (
   UINT64             FileSize;
   EFI_FILE_INFO      *Info;
   UINTN              InfoSize;
-  UINT32             EocdOffset;
+  UINT64             EocdOffset;
   UINT64             CentralDirOffset;
   UINT64             CentralDirSize;
   UINT64             TotalEntries;
@@ -136,7 +136,7 @@ ReadKernelFromZip (
   EocdOffset = 0;
   for (I = 0; I + 4 < ReadSize; I++) {
     if (*(UINT32 *)(EocdBuf + I) == ZIP_EOCD_SIGNATURE) {
-      EocdOffset = (UINT32)(FileSize - sizeof (EocdBuf) + I);
+      EocdOffset = FileSize - sizeof (EocdBuf) + I;
       //
       // EOCD fields at this offset:
       // +0: signature(4)
