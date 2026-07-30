@@ -398,6 +398,7 @@ ApfsConnectDevice (
   //
   Status = InternalApfsReadSuperBlock (BlockIo, &SuperBlock);
   if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "OCJS: Failed to read APFS superblock - %r\n", Status));
     return Status;
   }
 
@@ -422,11 +423,15 @@ ApfsConnectDevice (
 
   Status = InternalApfsReadDriver (PrivateData, &DriverSize, &DriverBuffer);
   if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "OCJS: Failed to read APFS driver - %r\n", Status));
     return Status;
   }
 
   Status = ApfsStartDriver (PrivateData, DriverBuffer, DriverSize);
   FreePool (DriverBuffer);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "OCJS: Failed to start APFS driver - %r\n", Status));
+  }
   return Status;
 }
 
