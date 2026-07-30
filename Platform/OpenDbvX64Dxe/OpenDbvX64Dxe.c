@@ -683,6 +683,7 @@ DirectLoadKernel (
       // All direct paths failed — try APFS firmlink subvolume paths
       //
       {
+        EFI_FILE_PROTOCOL  *SubvolDir;
         STATIC CONST CHAR16  *SubvolPaths[] = {
           L"\\System\\Volumes\\Shared Support\\com_apple_MobileAsset_MacSoftwareUpdate",
           L"\\System\\Volumes\\SharedSupport\\com_apple_MobileAsset_MacSoftwareUpdate",
@@ -691,14 +692,14 @@ DirectLoadKernel (
         };
 
         for (UINTN Si = 0; SubvolPaths[Si] != NULL; Si++) {
-          Status = RootDirectory->Open (RootDirectory, &ZipDir, (CHAR16 *)SubvolPaths[Si], EFI_FILE_MODE_READ, 0);
+          Status = RootDirectory->Open (RootDirectory, &SubvolDir, (CHAR16 *)SubvolPaths[Si], EFI_FILE_MODE_READ, 0);
           if (!EFI_ERROR (Status)) {
             UINTN   DirBufSize = SIZE_256KB;
             VOID    *DirBuf = AllocatePool (DirBufSize);
             if (DirBuf != NULL) {
               while (TRUE) {
                 UINTN  ReadSz = DirBufSize;
-                Status = ZipDir->Read (ZipDir, &ReadSz, DirBuf);
+                Status = SubvolDir->Read (SubvolDir, &ReadSz, DirBuf);
                 if (EFI_ERROR (Status) || ReadSz == 0) {
                   break;
                 }
@@ -715,7 +716,7 @@ DirectLoadKernel (
                         Is32Bit       = FALSE;
                         Status        = EFI_SUCCESS;
                         DEBUG ((DEBUG_INFO, "DirectKernel: Extracted kernel from firmlink: %s - %u bytes\n", FullPath, KernelSize));
-                        ZipDir->Close (ZipDir);
+                        SubvolDir->Close (SubvolDir);
                         FreePool (DirBuf);
                         goto SKIP_READ_APPLE_KERNEL;
                       }
@@ -729,7 +730,7 @@ DirectLoadKernel (
               }
               FreePool (DirBuf);
             }
-            ZipDir->Close (ZipDir);
+            SubvolDir->Close (SubvolDir);
             Status = EFI_NOT_FOUND;
           }
         }
