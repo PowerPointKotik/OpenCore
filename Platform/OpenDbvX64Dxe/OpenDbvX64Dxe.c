@@ -842,6 +842,11 @@ SKIP_READ_APPLE_KERNEL:
   // If we got kernel from ZIP, skip ReadAppleKernel
   //
   if (AllocatedSize == 0 || KernelBuffer == NULL) {
+    if (KernelFile == NULL) {
+      DEBUG ((DEBUG_ERROR, "DirectKernel: No kernel file handle available\n"));
+      RootDirectory->Close (RootDirectory);
+      return EFI_NOT_FOUND;
+    }
     Status = ReadAppleKernel (
               KernelFile,
               FALSE,
