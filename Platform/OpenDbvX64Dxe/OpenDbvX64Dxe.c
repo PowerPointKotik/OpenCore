@@ -669,6 +669,7 @@ DirectLoadKernel (
       if (StrCmp (FallbackPaths[PathIndex], KernelPath) == 0) {
         continue;
       }
+      KernelFile = NULL;
       Status = RootDirectory->Open (
                                RootDirectory,
                                &KernelFile,
