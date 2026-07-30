@@ -29,9 +29,6 @@
 
 #include <Library/OcCompressionLib/zlib/zlib.h>
 
-extern int inflateInit2_ (z_streamp, int, const char *, int);
-#define inflateInit2(strm, bits) inflateInit2_((strm), (bits), ZLIB_VERSION, (int)sizeof(z_stream))
-
 #include <Protocol/OcBootEntry.h>
 #include <Protocol/SimpleFileSystem.h>
 
@@ -890,10 +887,9 @@ SKIP_READ_APPLE_KERNEL:
     //
     // Use a minimal fake context — the entry point code below handles LC_UNIXTHREAD directly.
     //
-    MachoContext.MachHeader   = Hdr;
+    MachoContext.MachHeader   = (MACH_HEADER_ANY *)Hdr;
     MachoContext.FileData     = KernelBuffer;
     MachoContext.FileSize     = KernelSize;
-    MachoContext.HeaderOffset = 0;
     MachoContext.InnerSize    = KernelSize;
 
     DEBUG ((DEBUG_INFO, "DirectKernel: ARM64 Mach-O parsed, NumCommands=%u\n", Hdr->NumCommands));
