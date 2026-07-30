@@ -689,31 +689,63 @@ DirectLoadKernel (
           L"",
           NULL
         };
-        STATIC CONST CHAR16  *ZipNames[] = {
-          L"734ab42e23c4b7f7c262e00c8e57b3cff8e778a4.zip",
-          NULL
-        };
 
         for (UINTN Zdi = 0; !EFI_ERROR (Status) && ZipDirs[Zdi] != NULL; Zdi++) {
-          for (UINTN Zni = 0; ZipNames[Zni] != NULL; Zni++) {
-            CHAR16  ZipPath[512];
-            if (ZipDirs[Zdi][0] != L'\0') {
-              UnicodeSPrint (ZipPath, sizeof (ZipPath), L"%s\\%s", ZipDirs[Zdi], ZipNames[Zni]);
-            } else {
-              UnicodeSPrint (ZipPath, sizeof (ZipPath), L"%s", ZipNames[Zni]);
-            }
+          EFI_FILE_PROTOCOL  *ZipDir;
+          Status = RootDirectory->Open (
+                                  RootDirectory,
+                                  &ZipDir,
+                                  (CHAR16 *)ZipDirs[Zdi],
+                                  EFI_FILE_MODE_READ,
+                                  0
+                                  );
+          if (!EFI_ERROR (Status)) {
+            //
+            // Enumerate directory for .zip files
+            //
+            UINTN   DirBufSize = SIZE_256KB;
+            VOID    *DirBuf = AllocatePool (DirBufSize);
+            if (DirBuf != NULL) {
+              while (TRUE) {
+                UINTN  ReadSz = DirBufSize;
+                Status = ZipDir->Read (ZipDir, &ReadSz, DirBuf);
+                if (EFI_ERROR (Status) || ReadSz == 0) {
+                  break;
+                }
+                EFI_FILE_INFO  *Entry = (EFI_FILE_INFO *)DirBuf;
+                while ((UINTN)Entry < (UINTN)DirBuf + ReadSz) {
+                  if ((Entry->Attribute & EFI_FILE_DIRECTORY) == 0) {
+                    UINTN  NameLen = StrLen (Entry->FileName);
+                    if ((NameLen > 4) && (StrCmp (Entry->FileName + NameLen - 4, L".zip") == 0)) {
+                      CHAR16  FullPath[512];
+                      if (ZipDirs[Zdi][0] != L'\0') {
+                        UnicodeSPrint (FullPath, sizeof (FullPath), L"%s\\%s", ZipDirs[Zdi], Entry->FileName);
+                      } else {
+                        UnicodeSPrint (FullPath, sizeof (FullPath), L"%s", Entry->FileName);
+                      }
 
-            KernelBuffer = ReadKernelFromZip (RootDirectory, ZipPath, L"kernelcache", &KernelSize);
-            if (KernelBuffer != NULL) {
-              AllocatedSize = KernelSize;
-              Is32Bit       = FALSE;
-              Status        = EFI_SUCCESS;
-              DEBUG ((DEBUG_INFO, "DirectKernel: Extracted kernel from ZIP: %u bytes\n", KernelSize));
-              //
-              // Skip the ReadAppleKernel call — we already have the raw kernel
-              //
-              goto SKIP_READ_APPLE_KERNEL;
+                      KernelBuffer = ReadKernelFromZip (RootDirectory, FullPath, L"kernelcache", &KernelSize);
+                      if (KernelBuffer != NULL) {
+                        AllocatedSize = KernelSize;
+                        Is32Bit       = FALSE;
+                        Status        = EFI_SUCCESS;
+                        DEBUG ((DEBUG_INFO, "DirectKernel: Extracted kernel from %s: %u bytes\n", FullPath, KernelSize));
+                        ZipDir->Close (ZipDir);
+                        FreePool (DirBuf);
+                        goto SKIP_READ_APPLE_KERNEL;
+                      }
+                    }
+                  }
+                  if (Entry->Size == 0) {
+                    break;
+                  }
+                  Entry = (EFI_FILE_INFO *)((UINT8 *)Entry + Entry->Size);
+                }
+              }
+              FreePool (DirBuf);
             }
+            ZipDir->Close (ZipDir);
+            Status = EFI_NOT_FOUND;
           }
         }
       }
@@ -1021,7 +1053,9 @@ DbtBootEntryAction (
                   }
                 }
               }
-              DbtSetBootInfo (gDbtContext, gInstallerDevice, L"\\SharedSupport\\kernel");
+              if (DbtGetInstallerDevice (gDbtContext) == NULL) {
+                DbtSetBootInfo (gDbtContext, gInstallerDevice, L"\\SharedSupport\\kernel");
+              }
             }
             Root->Close (Root);
           }
@@ -1490,7 +1524,7 @@ OcGetDbtBootEntries (
     // All DBT entries go through unmanaged boot action to bypass LoadImage
     // since boot.efi/kernel are ARM64 and EDK2 LoadImage will reject them.
     //
-    DbtSetBootInfo (gDbtContext, gInstallerDevice != NULL ? gInstallerDevice : Device, L"\\SharedSupport\\kernel");
+    DbtSetBootInfo (gDbtContext, gInstallerDevice != NULL ? gInstallerDevice : Device, L"\\kernel");
     NewEntries[0].UnmanagedBootAction             = DbtBootEntryAction;
     NewEntries[0].UnmanagedBootGetFinalDevicePath = NULL;
     //
