@@ -7,6 +7,7 @@
 #include <Uefi.h>
 #include <Guid/FileInfo.h>
 #include <Guid/AppleApfsInfo.h>
+#include <Guid/AppleApfsInfo.h>
 #include <IndustryStandard/AppleBootArgs.h>
 #include <IndustryStandard/AppleFatBinaryImage.h>
 #include <IndustryStandard/AppleMachoImage.h>
@@ -1000,6 +1001,35 @@ DbtBootEntryAction (
                         &Handles
                         );
     if (!EFI_ERROR (ScanStatus) && Count > 0) {
+      //
+      // FIRST PASS: log all handles with their volume info
+      //
+      for (UINTN Idx = 0; Idx < Count; Idx++) {
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+        EFI_FILE_PROTOCOL                *Root;
+        ScanStatus = gBS->HandleProtocol (Handles[Idx], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs);
+        if (!EFI_ERROR (ScanStatus)) {
+          ScanStatus = Fs->OpenVolume (Fs, &Root);
+          if (!EFI_ERROR (ScanStatus)) {
+            //
+            // Try to get APFS volume info
+            //
+            APPLE_APFS_VOLUME_INFO  *VolInfo;
+            VolInfo = OcGetFileInfo (Root, &gAppleApfsVolumeInfoGuid, sizeof (*VolInfo), NULL);
+            if (VolInfo != NULL) {
+              DEBUG ((DEBUG_INFO, "DBT: Handle %p APFS role=0x%X hasGG=%d hasSS=%d\n",
+                       Handles[Idx], VolInfo->Role,
+                       IsGoldenGateInstaller (Root),
+                       IsSharedSupportVolume (Root)));
+              FreePool (VolInfo);
+            } else {
+              DEBUG ((DEBUG_INFO, "DBT: Handle %p non-APFS hasGG=%d\n",
+                       Handles[Idx], IsGoldenGateInstaller (Root)));
+            }
+            Root->Close (Root);
+          }
+        }
+      }
       for (UINTN Idx = 0; Idx < Count; Idx++) {
         EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
         EFI_FILE_PROTOCOL                *Root;
