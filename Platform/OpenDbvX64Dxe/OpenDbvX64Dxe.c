@@ -589,10 +589,10 @@ DirectLoadKernel (
   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FileSystem;
   EFI_FILE_PROTOCOL                *RootDirectory;
   EFI_FILE_PROTOCOL                *KernelFile;
-  UINT8                            *KernelBuffer;
-  UINT32                           KernelSize;
-  UINT32                           AllocatedSize;
-  BOOLEAN                          Is32Bit;
+  UINT8                            *KernelBuffer   = NULL;
+  UINT32                           KernelSize      = 0;
+  UINT32                           AllocatedSize   = 0;
+  BOOLEAN                          Is32Bit         = FALSE;
   OC_MACHO_CONTEXT                 MachoContext;
   UINT64                           EntryPoint;
   BootArgs2                       *BootArgs;
