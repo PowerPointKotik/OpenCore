@@ -28,6 +28,9 @@
 
 #include <Library/OcCompressionLib/zlib/zlib.h>
 
+extern int inflateInit2_ (z_streamp, int, const char *, int);
+#define inflateInit2(strm, bits) inflateInit2_((strm), (bits), ZLIB_VERSION, (int)sizeof(z_stream))
+
 #include <Protocol/OcBootEntry.h>
 #include <Protocol/SimpleFileSystem.h>
 

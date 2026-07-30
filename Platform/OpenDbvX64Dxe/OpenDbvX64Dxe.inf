@@ -60,3 +60,7 @@
 
 [Depex]
   TRUE
+
+[BuildOptions]
+  CLANGPDB:*_*_*_CC_FLAGS = -Wno-deprecated-non-prototype
+  GCC:*_CLANGDWARF_*_CC_FLAGS = -Wno-deprecated-non-prototype
