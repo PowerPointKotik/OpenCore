@@ -1054,6 +1054,8 @@ DbtBootEntryAction (
                 }
               }
               if (DbtGetInstallerDevice (gDbtContext) == NULL) {
+                DEBUG ((DEBUG_WARN, "DBT: .IAPhysicalMedia found but SharedSupport volume NOT MOUNTED\n"));
+                DEBUG ((DEBUG_WARN, "DBT: Kernel is on unmounted APFS subvolume — cannot boot directly\n"));
                 DbtSetBootInfo (gDbtContext, gInstallerDevice, L"\\SharedSupport\\kernel");
               }
             }

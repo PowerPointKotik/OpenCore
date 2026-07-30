@@ -2252,8 +2252,14 @@ OcScanForBootEntries (
 
     //
     // Try IA physical media marker for macOS 27 installer detection.
+    // NOTE: The kernel is on the SharedSupport APFS subvolume which may not be mounted.
+    // The DBT fallback (OC_DBT_FALLBACK_PROTOCOL) handles this when entry is selected.
     //
-    InternalAddBootEntryFromIAPhysicalMedia (BootContext, FileSystem);
+    // Temporarily disabled: creates a normal entry with NULL DevicePath which
+    // redirects to DBT fallback, but the kernel is inaccessible without
+    // SharedSupport volume mounting. See OpenDbvX64Dxe fallback.
+    //
+    // InternalAddBootEntryFromIAPhysicalMedia (BootContext, FileSystem);
   }
 
   if (CustomFileSystem != NULL) {
