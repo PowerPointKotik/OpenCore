@@ -2666,6 +2666,7 @@ OcLoadBootEntry (
   @retval EFI_SUCCESS if installer entry was created.
   @retval EFI_NOT_FOUND if .IAPhysicalMedia marker was not found.
 **/
+#if 0  // Disabled: created useless entry without DBT fallback
 STATIC
 EFI_STATUS
 InternalAddBootEntryFromIAPhysicalMedia (
@@ -2720,6 +2721,7 @@ InternalAddBootEntryFromIAPhysicalMedia (
     }
   }
 
-  RootDir->Close (RootDir);
+   RootDir->Close (RootDir);
   return EFI_NOT_FOUND;
 }
+#endif
