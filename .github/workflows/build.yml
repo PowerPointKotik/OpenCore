@@ -26,17 +26,17 @@ jobs:
       HOMEBREW_NO_INSTALL_CLEANUP: 1
       HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
-        - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
          submodules: 'recursive'
          fetch-depth: 0
 
-        - name: Init git submodules (safety)
+      - name: Init git submodules (safety)
         run: |
          git submodule sync --recursive || true
          git submodule update --init --recursive || true
 
-        - name: Ensure UDK from dstatstrussia/audk
+      - name: Ensure UDK from dstatstrussia/audk
         run: |
          UDK_PATH="UDK"
          if [ -d "$UDK_PATH" ]; then
@@ -61,16 +61,16 @@ jobs:
          echo "Listing linked directories:"
          ls -la MdePkg MdeModulePkg || true
 
-        - name: Install Linux Toolchain
+      - name: Install Linux Toolchain
         run: |
           brew tap FiloSottile/homebrew-musl-cross
           brew trust filosottile/musl-cross
           brew install musl-cross
 
-        - name: Install Dependencies
+      - name: Install Dependencies
         run: brew install mingw-w64
 
-        - name: CI Bootstrap
+      - name: CI Bootstrap
         run: |
          # Universal Xcode/Developer selection for macOS runners
          # Priority order: specific Xcode (optional), Xcode.app, any Xcode-*.app, CommandLineTools
@@ -171,15 +171,15 @@ jobs:
          # Re-enable strict mode
          set -euo pipefail
 
-        - run: ./build_duet.tool
-        - run: ./build_oc.tool
+      - run: ./build_duet.tool
+      - run: ./build_oc.tool
 
-        - name: Upload to Artifacts
+      - name: Upload to Artifacts
         uses: actions/upload-artifact@v6
         with:
          name: macOS XCODE5 Artifacts
          path: Binaries/*.zip
-        - name: Upload to Release
+      - name: Upload to Release
          if: github.event_name == 'release'
          uses: svenstaro/upload-release-action@04733e069f2d7f7f0b4aebc4fbdbce8613b03ccd
          with:
@@ -194,36 +194,36 @@ jobs:
     env:
       TOOLCHAINS: CLANGPDB
     steps:
-        - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           submodules: 'recursive'
           fetch-depth: 0
 
-        - name: Init git submodules (safety)
+      - name: Init git submodules (safety)
         run: |
           git submodule sync --recursive || true
           git submodule update --init --recursive || true
 
-        - name: Apply Docker AppArmor settings
+      - name: Apply Docker AppArmor settings
         run: |
           src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
 
-        - name: Use Docker in rootless mode.
+      - name: Use Docker in rootless mode.
         uses: ScribeMD/rootless-docker@0.2.2
 
-        - name: Ensure Docker available
+      - name: Ensure Docker available
         run: |
           echo "Checking Docker availability..."
           docker version || (echo "Docker not available — failing early" && exit 1)
           docker info || true
 
-        - name: ./build_duet.tool
+      - name: ./build_duet.tool
         run: docker compose run build-duet
 
-        - name: ./build_oc.tool
+      - name: ./build_oc.tool
         run: docker compose run build-oc
 
-        - name: Upload to Artifacts
+      - name: Upload to Artifacts
         uses: actions/upload-artifact@v6
         with:
           name: Linux CLANGPDB Artifacts
@@ -235,36 +235,36 @@ jobs:
     env:
       TOOLCHAINS: GCC
     steps:
-        - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           submodules: 'recursive'
           fetch-depth: 0
 
-        - name: Init git submodules (safety)
+      - name: Init git submodules (safety)
         run: |
           git submodule sync --recursive || true
           git submodule update --init --recursive || true
 
-        - name: Apply Docker AppArmor settings
+      - name: Apply Docker AppArmor settings
         run: |
           src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
 
-        - name: Use Docker in rootless mode.
+      - name: Use Docker in rootless mode.
         uses: ScribeMD/rootless-docker@0.2.2
 
-        - name: Ensure Docker available
+      - name: Ensure Docker available
         run: |
           echo "Checking Docker availability..."
           docker version || (echo "Docker not available — failing early" && exit 1)
           docker info || true
 
-        - name: ./build_duet.tool
+      - name: ./build_duet.tool
         run: docker compose run build-duet
 
-        - name: ./build_oc.tool
+      - name: ./build_oc.tool
         run: docker compose run build-oc
 
-        - name: Upload to Artifacts
+      - name: Upload to Artifacts
         uses: actions/upload-artifact@v6
         with:
           name: Linux GCC Artifacts
@@ -276,36 +276,36 @@ jobs:
     env:
       TOOLCHAINS: CLANGDWARF
     steps:
-        - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           submodules: 'recursive'
           fetch-depth: 0
 
-        - name: Init git submodules (safety)
+      - name: Init git submodules (safety)
         run: |
           git submodule sync --recursive || true
           git submodule update --init --recursive || true
 
-        - name: Apply Docker AppArmor settings
+      - name: Apply Docker AppArmor settings
         run: |
           src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
 
-        - name: Use Docker in rootless mode.
+      - name: Use Docker in rootless mode.
         uses: ScribeMD/rootless-docker@0.2.2
 
-        - name: Ensure Docker available
+      - name: Ensure Docker available
         run: |
           echo "Checking Docker availability..."
           docker version || (echo "Docker not available — failing early" && exit 1)
           docker info || true
 
-        - name: ./build_duet.tool
+      - name: ./build_duet.tool
         run: docker compose run build-duet
 
-        - name: ./build_oc.tool
+      - name: ./build_oc.tool
         run: docker compose run build-oc
 
-        - name: Upload to Artifacts
+      - name: Upload to Artifacts
         uses: actions/upload-artifact@v6
         with:
           name: Linux CLANGDWARF Artifacts
@@ -315,30 +315,30 @@ jobs:
     name: Linux Docs
     runs-on: ubuntu-24.04
     steps:
-        - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           submodules: 'recursive'
           fetch-depth: 0
 
-        - name: Init git submodules (safety)
+      - name: Init git submodules (safety)
         run: |
           git submodule sync --recursive || true
           git submodule update --init --recursive || true
 
-        - name: Apply Docker AppArmor settings
+      - name: Apply Docker AppArmor settings
         run: |
           src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/docker-apparmor.sh) && eval "$src" || exit 1
 
-        - name: Use Docker in rootless mode.
+      - name: Use Docker in rootless mode.
         uses: ScribeMD/rootless-docker@0.2.2
 
-        - name: Ensure Docker available
+      - name: Ensure Docker available
         run: |
           echo "Checking Docker availability..."
           docker version || (echo "Docker not available — failing early" && exit 1)
           docker info || true
 
-        - name: Docs
+      - name: Docs
         run: docker compose run build-docs
 
   build-windows:
@@ -348,17 +348,17 @@ jobs:
       HAS_OPENSSL_BUILD: 0
       CC: gcc
     steps:
-        - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           submodules: 'recursive'
           fetch-depth: 0
 
-        - name: Init git submodules (safety)
+      - name: Init git submodules (safety)
         run: |
           git submodule sync --recursive || true
           git submodule update --init --recursive || true
 
-        - name: Ensure UDK from dstatstrussia/audk
+      - name: Ensure UDK from dstatstrussia/audk
         shell: bash
         run: |
           UDK_PATH="UDK"
@@ -384,22 +384,22 @@ jobs:
           echo "Listing linked directories:"
           ls -la MdePkg MdeModulePkg || true
 
-        - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6
         id: python
         with:
           python-version: '3.x'
 
-        - uses: TheMrMilchmann/setup-msvc-dev@v4
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x86
 
-        - name: Install Dependencies
+      - name: Install Dependencies
         shell: cmd
         run: |
           choco install make nasm zip iasl --no-progress
           "%pythonLocation%\\python.exe" -m pip install setuptools --quiet --force-reinstall
 
-        - name: CI Bootstrap
+      - name: CI Bootstrap
         shell: bash
         env:
           PYTHON_COMMAND: ${{ steps.python.outputs.python-path }}
@@ -421,21 +421,21 @@ jobs:
           fi
           set -e
 
-        - name: Build Duet
+      - name: Build Duet
         shell: bash
         run: |
           export PATH="/c/Program Files/NASM:$PATH"
           export PATH="/c/Program Files/iasl:$PATH"
           ./build_duet.tool
 
-        - name: Build OpenCore
+      - name: Build OpenCore
         shell: bash
         run: |
           export PATH="/c/Program Files/NASM:$PATH"
           export PATH="/c/Program Files/iasl:$PATH"
           ./build_oc.tool
 
-        - name: Upload to Artifacts
+      - name: Upload to Artifacts
         uses: actions/upload-artifact@v6
         with:
           name: Windows Artifacts
