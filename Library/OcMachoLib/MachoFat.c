@@ -155,3 +155,12 @@ FatFilterArchitecture64 (
 {
   return FatFilterArchitectureByType (FileData, FileSize, MachCpuTypeX8664);
 }
+
+EFI_STATUS
+FatFilterArchitectureArm64 (
+  IN OUT UINT8   **FileData,
+  IN OUT UINT32  *FileSize
+  )
+{
+  return FatFilterArchitectureByType (FileData, FileSize, MachCpuTypeArm64);
+}

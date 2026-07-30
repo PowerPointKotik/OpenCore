@@ -1675,4 +1675,10 @@ FatFilterArchitecture64 (
   IN OUT UINT32  *FileSize
   );
 
+EFI_STATUS
+FatFilterArchitectureArm64 (
+  IN OUT UINT8   **FileData,
+  IN OUT UINT32  *FileSize
+  );
+
 #endif // OC_MACHO_LIB_H

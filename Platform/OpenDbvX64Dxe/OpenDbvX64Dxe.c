@@ -876,17 +876,40 @@ SKIP_READ_APPLE_KERNEL:
   ZeroMem (&MachoContext, sizeof (MachoContext));
   IsArm64 = IsArm64Kernel (KernelBuffer, KernelSize, FALSE);
 
-  if (!MachoInitializeContext (
-         &MachoContext,
-         KernelBuffer,
-         KernelSize,
-         0,
-         KernelSize,
-         Is32Bit
-         )) {
-    DEBUG ((DEBUG_ERROR, "DirectKernel: Failed to initialize Mach-O context\n"));
-    FreePool (KernelBuffer);
-    return EFI_INVALID_PARAMETER;
+  if (IsArm64) {
+    //
+    // ARM64 kernel — skip MachoInitializeContext (filters for x86_64).
+    // Set up basics manually since we only need the entry point.
+    //
+    MACH_HEADER_64  *Hdr = (MACH_HEADER_64 *)KernelBuffer;
+    if (Hdr->Signature != MACH_HEADER_64_SIGNATURE) {
+      DEBUG ((DEBUG_ERROR, "DirectKernel: Invalid Mach-O 64 magic %08X\n", Hdr->Signature));
+      FreePool (KernelBuffer);
+      return EFI_INVALID_PARAMETER;
+    }
+    //
+    // Use a minimal fake context — the entry point code below handles LC_UNIXTHREAD directly.
+    //
+    MachoContext.MachHeader   = Hdr;
+    MachoContext.FileData     = KernelBuffer;
+    MachoContext.FileSize     = KernelSize;
+    MachoContext.HeaderOffset = 0;
+    MachoContext.InnerSize    = KernelSize;
+
+    DEBUG ((DEBUG_INFO, "DirectKernel: ARM64 Mach-O parsed, NumCommands=%u\n", Hdr->NumCommands));
+  } else {
+    if (!MachoInitializeContext (
+          &MachoContext,
+          KernelBuffer,
+          KernelSize,
+          0,
+          KernelSize,
+          Is32Bit
+          )) {
+      DEBUG ((DEBUG_ERROR, "DirectKernel: Failed to initialize Mach-O context\n"));
+      FreePool (KernelBuffer);
+      return EFI_INVALID_PARAMETER;
+    }
   }
 
   //
