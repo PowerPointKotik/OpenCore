@@ -20,7 +20,6 @@ jobs:
     name: macOS XCODE5
     runs-on: macos-latest
     env:
-      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       JOB_TYPE: BUILD
       HOMEBREW_NO_INSTALL_CLEANUP: 1
       HOMEBREW_NO_AUTO_UPDATE: 1
@@ -74,11 +73,6 @@ jobs:
          export DEVELOPER_DIR=$(xcode-select -p) 2>/dev/null || true
          echo "Using DEVELOPER_DIR=$DEVELOPER_DIR"
          src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
-
-      - name: Fix Xcode path
-        run: |
-         sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
-         unset DEVELOPER_DIR
 
       - run: ./build_duet.tool
       - run: ./build_oc.tool
@@ -291,28 +285,27 @@ jobs:
         run: |
           echo "=== Python detection ==="
           echo "PYTHON_COMMAND from setup-python: $PYTHON_COMMAND"
-
-          PYTHON_CMD="$PYTHON_COMMAND"
-          if [ ! -x "$PYTHON_CMD" ]; then
-            echo "Error: Python executable not found at $PYTHON_CMD"
-            exit 1
-          fi
-          echo "Python path verified: $PYTHON_CMD"
-
-          URL="https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh"
-          curl -LfsS "$URL" -o ci-bootstrap.sh
-          chmod +x ci-bootstrap.sh
+          
+          export PATH="/c/Program Files/NASM:$PATH"
+          export PATH="/c/Program Files/iasl:$PATH"
+          
+          # Download and run the bootstrap script
+          curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh -o ci-bootstrap.sh
           bash ci-bootstrap.sh || exit 1
 
       - name: Build Duet
-        shell: cmd
+        shell: bash
         run: |
-          call .\build_duet.tool
+          export PATH="/c/Program Files/NASM:$PATH"
+          export PATH="/c/Program Files/iasl:$PATH"
+          ./build_duet.tool
 
       - name: Build OpenCore
-        shell: cmd
+        shell: bash
         run: |
-          call .\build_oc.tool
+          export PATH="/c/Program Files/NASM:$PATH"
+          export PATH="/c/Program Files/iasl:$PATH"
+          ./build_oc.tool
 
       - name: Upload to Artifacts
         uses: actions/upload-artifact@v6
