@@ -321,6 +321,15 @@ InternalApfsReadSuperBlock (
                         SuperBlock
                         );
     if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_INFO, "OCJS: BlockIo read failed - %r MediaId=%u\n", Status, BlockIo->Media->MediaId));
+      break;
+    }
+
+    //
+    // Super block is expected to have NXSB magic.
+    //
+    if (SuperBlock->Magic != APFS_NX_SIGNATURE) {
+      DEBUG ((DEBUG_INFO, "OCJS: Magic mismatch: 0x%08X vs 0x%08X\n", SuperBlock->Magic, APFS_NX_SIGNATURE));
       break;
     }
 
@@ -350,6 +359,7 @@ InternalApfsReadSuperBlock (
        || (SuperBlock->BlockSize < APFS_NX_MINIMUM_BLOCK_SIZE)
        || (SuperBlock->BlockSize > APFS_NX_MAXIMUM_BLOCK_SIZE))
     {
+      DEBUG ((DEBUG_INFO, "OCJS: Invalid block size: %u (disk=%u)\n", SuperBlock->BlockSize, BlockIo->Media->BlockSize));
       break;
     }
 
