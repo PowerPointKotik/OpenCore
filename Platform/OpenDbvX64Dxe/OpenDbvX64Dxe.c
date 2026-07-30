@@ -26,7 +26,7 @@
 #include <Library/OcMemoryLib.h>
 #include <Library/OcDeviceTreeLib.h>
 
-#include "zlib/zlib.h"
+#include <Library/OcCompressionLib/zlib/zlib.h>
 
 #include <Protocol/OcBootEntry.h>
 #include <Protocol/SimpleFileSystem.h>
