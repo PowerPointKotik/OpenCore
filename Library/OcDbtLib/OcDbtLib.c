@@ -503,8 +503,175 @@ STATIC UINTN DbtTranslateOne (
   }
 
   //
-  // 110x-111x: Loads/stores (advanced) or data processing
+  // 0x0C-0x0D (110x): Advanced SIMD/FP loads/stores, or MSR/MRS
   //
+  if (Op0 == 0xC || Op0 == 0xD) {
+    UINT32 OpByte = (Inst >> 24) & 0xFF;
+
+    if (OpByte == 0xD5) {
+      //
+      // MSR / MRS — system register access
+      //
+      BOOLEAN IsMsr = (Inst >> 21) & 1;
+      UINT32  SysReg = ((Inst >> 5) & 0xFFFF) | (((Inst >> 19) & 0x3) << 14);
+
+      // Extract op0/op1/CRn/CRm/op2
+      UINT32  Op0   = (Inst >> 19) & 0x3;
+      UINT32  Op1   = (Inst >> 16) & 0x7;
+      UINT32  CRn   = (Inst >> 12) & 0xF;
+      UINT32  CRm   = (Inst >> 8)  & 0xF;
+      UINT32  Op2   = (Inst >> 5)  & 0x7;
+      UINT32  Key   = (Op0 << 16) | (Op1 << 12) | (CRn << 8) | (CRm << 4) | Op2;
+
+      DBG((DEBUG_INFO, "DBT_ASM:    %s sysreg=0x%x (o0=%d o1=%d cn=%d cm=%d o2=%d key=0x%x)\n",
+           IsMsr ? "MSR" : "MRS", SysReg, Op0, Op1, CRn, CRm, Op2, Key));
+
+      if (IsMsr) {
+        //
+        // MSR: write system register from Xt
+        //
+        EmitLoadRax(&P, RtOff);
+
+        if (Op0 == 3 && Op1 == 0 && CRn == 2 && CRm == 0) {
+          // TTBR0_EL1 — page table base
+          DBG((DEBUG_INFO, "DBT_MMU:  MSR TTBR0_EL1 <- X%d\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, TTBR0_EL1));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 2 && CRm == 1) {
+          DBG((DEBUG_INFO, "DBT_MMU:  MSR TTBR1_EL1 <- X%d\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, TTBR1_EL1));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 1 && CRm == 0) {
+          DBG((DEBUG_INFO, "DBT_MMU:  MSR SCTLR_EL1 <- X%d\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, SCTLR_EL1));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 2 && CRm == 0 && Op2 == 2) {
+          DBG((DEBUG_INFO, "DBT_MMU:  MSR TCR_EL1 <- X%d\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, TCR_EL1));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 10 && CRm == 2) {
+          DBG((DEBUG_INFO, "DBT_MMU:  MSR MAIR_EL1 <- X%d\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, MAIR_EL1));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 12 && CRm == 0) {
+          DBG((DEBUG_INFO, "DBT_EXC: MSR VBAR_EL1 <- X%d (exception vector base)\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, VBAR_EL1));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 4 && CRm == 0 && Op2 == 0) {
+          DBG((DEBUG_INFO, "DBT_EXC: MSR SPSR_EL1 <- X%d\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, SPSR_EL1));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 4 && CRm == 0 && Op2 == 1) {
+          DBG((DEBUG_INFO, "DBT_EXC: MSR ELR_EL1 <- X%d\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, ELR_EL1));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 14 && CRm == 0) {
+          DBG((DEBUG_INFO, "DBT_EXC: MSR CNTFRQ_EL0 <- X%d\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, CNTFRQ_EL0));
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 10 && CRm == 14) {
+          DBG((DEBUG_INFO, "DBT_SIMD: MSR CPACR_EL1 <- X%d (FP/SIMD enable)\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, CPACR_EL1));
+        } else {
+          DBG((DEBUG_INFO, "DBT_SYS:  MSR unknown (o0=%d o1=%d crn=%d crm=%d o2=%d)\n", Op0, Op1, CRn, CRm, Op2));
+          EmitNop(&P);
+        }
+      } else {
+        //
+        // MRS: read system register into Xt
+        //
+        UINT32 Off = 0;
+        BOOLEAN Known = TRUE;
+
+        if (Op0 == 3 && Op1 == 0 && CRn == 0 && CRm == 0 && Op2 == 0) {
+          Off = OFFSET_OF(DBT_ARM64_STATE, MIDR_EL1);
+          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, MIDR_EL1\n", Rt));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 0 && CRm == 0 && Op2 == 5) {
+          Off = OFFSET_OF(DBT_ARM64_STATE, MPIDR_EL1);
+          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, MPIDR_EL1\n", Rt));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 1 && CRm == 0) {
+          Off = OFFSET_OF(DBT_ARM64_STATE, SCTLR_EL1);
+          DBG((DEBUG_INFO, "DBT_MMU:  MRS X%d, SCTLR_EL1\n", Rt));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 2 && CRm == 0) {
+          Off = OFFSET_OF(DBT_ARM64_STATE, TTBR0_EL1);
+          DBG((DEBUG_INFO, "DBT_MMU:  MRS X%d, TTBR0_EL1\n", Rt));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 2 && CRm == 1) {
+          Off = OFFSET_OF(DBT_ARM64_STATE, TTBR1_EL1);
+          DBG((DEBUG_INFO, "DBT_MMU:  MRS X%d, TTBR1_EL1\n", Rt));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 14 && CRm == 0) {
+          Off = OFFSET_OF(DBT_ARM64_STATE, CNTFRQ_EL0);
+          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTFRQ_EL0\n", Rt));
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 0 && Op2 == 1) {
+          Off = OFFSET_OF(DBT_ARM64_STATE, CNTVCT_EL0);
+          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTVCT_EL0\n", Rt));
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 3 && Op2 == 1) {
+          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTV_CVAL_EL0\n", Rt));
+          Off = OFFSET_OF(DBT_ARM64_STATE, CNTV_CVAL_EL0);
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 3 && Op2 == 0) {
+          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTV_CTL_EL0\n", Rt));
+          Off = OFFSET_OF(DBT_ARM64_STATE, CNTV_CTL_EL0);
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 12 && CRm == 0) {
+          Off = OFFSET_OF(DBT_ARM64_STATE, VBAR_EL1);
+          DBG((DEBUG_INFO, "DBT_EXC: MRS X%d, VBAR_EL1\n", Rt));
+        } else {
+          Known = FALSE;
+          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, unknown sysreg (key=0x%x)\n", Rt, Key));
+          EmitNop(&P);
+        }
+
+        if (Known) {
+          EmitLoadRax(&P, Off);
+          EmitStoreRax(&P, RtOff);
+        }
+      }
+      return (UINTN)(P - X86Buf);
+    }
+
+    // Other 110x instructions — emit NOP with log
+    DBG((DEBUG_INFO, "DBT_ASM:    Op0=0x%x advanced -> NOP\n", Op0));
+    EmitNop(&P);
+    return (UINTN)(P - X86Buf);
+  }
+
+  //
+  // 0x0E-0x0F (111x): Advanced SIMD and floating-point
+  //
+  if (Op0 >= 0xE) {
+    UINT32  SIMD_op = (Inst >> 24) & 0xF;  // bits 27-24
+
+    if ((SIMD_op & 0xC) == 0x4) {
+      //
+      // SIMD/FP ALU operations
+      //
+      UINT32  SIMD_sub = (Inst >> 21) & 0x7;
+      UINT8   Vd       = Arm64Rd(Inst);
+      UINT8   Vn       = Arm64Rn(Inst);
+      UINT8   Vm       = Arm64Rm(Inst);
+      BOOLEAN IsScalar  = ((Inst >> 28) & 1) == 1;
+      BOOLEAN IsDword   = ((Inst >> 22) & 1) == 0;  // D-form vs Q-form
+
+      if (SIMD_sub == 1) {
+        DBG((DEBUG_INFO, "DBT_SIMD: FADD %c%d, %c%d, %c%d\n",
+             IsScalar ? 'S' : 'V', Vd, IsScalar ? 'S' : 'V', Vn, IsScalar ? 'S' : 'V', Vm));
+      } else if (SIMD_sub == 5) {
+        DBG((DEBUG_INFO, "DBT_SIMD: FMUL %c%d, %c%d, %c%d\n",
+             IsScalar ? 'S' : 'V', Vd, IsScalar ? 'S' : 'V', Vn, IsScalar ? 'S' : 'V', Vm));
+      } else if (SIMD_sub == 3) {
+        DBG((DEBUG_INFO, "DBT_SIMD: FSUB %c%d, %c%d, %c%d\n",
+             IsScalar ? 'S' : 'V', Vd, IsScalar ? 'S' : 'V', Vn, IsScalar ? 'S' : 'V', Vm));
+      } else if (SIMD_sub == 0) {
+        DBG((DEBUG_INFO, "DBT_SIMD: FMLA/FMUL by element %c%d, %c%d, %c%d\n",
+             IsScalar ? 'S' : 'V', Vd, IsScalar ? 'S' : 'V', Vn, IsScalar ? 'S' : 'V', Vm));
+      } else {
+        DBG((DEBUG_INFO, "DBT_SIMD: ALU sub=%d %c%d, %c%d, %c%d -> NOP\n",
+             SIMD_sub, IsScalar ? 'S' : 'V', Vd, IsScalar ? 'S' : 'V', Vn, IsScalar ? 'S' : 'V', Vm));
+      }
+      EmitNop(&P);
+    } else if ((SIMD_op & 0xC) == 0x0) {
+      //
+      // SIMD/FP move, duplicate, insert
+      //
+      DBG((DEBUG_INFO, "DBT_SIMD: Move/dup/insert -> NOP\n"));
+      EmitNop(&P);
+    } else {
+      DBG((DEBUG_INFO, "DBT_SIMD: SIMD op0=0x%X -> NOP\n", SIMD_op));
+      EmitNop(&P);
+    }
+    return (UINTN)(P - X86Buf);
+  }
+
+  DBG((DEBUG_INFO, "DBT_ASM:   UNKNOWN op0=0x%X -> NOP\n", Op0));
   EmitNop(&P);
   return (UINTN)(P - X86Buf);
 }
@@ -539,13 +706,25 @@ EFI_STATUS DbtInitContext (OUT DBT_CONTEXT **Context, IN UINTN CodeSize) {
   Ctx->TranslatedCode = (VOID *)((UINTN)Ctx + sizeof(DBT_CONTEXT));
   *Context = Ctx;
 
-  // Init ARM64 state defaults
-  Ctx->ArmState.SCTLR_EL1 = 0x30D00800;  // MMU off, caches on
-  Ctx->ArmState.TCR_EL1   = 0;  // identity map setting
-  Ctx->ArmState.CPACR_EL1 = 0x300000;  // FP/NEON disabled
-  Ctx->ArmState.CNTFRQ_EL0= 24000000;  // 24 MHz
+  //
+  // Init ARM64 system state for identity-mapped boot
+  //
+  Ctx->ArmState.SCTLR_EL1 = 0x30D00800;   // MMU off, caches on, little-endian
+  Ctx->ArmState.TCR_EL1   = 0;             // identity map
+  Ctx->ArmState.TTBR0_EL1 = 0;             // no page table
+  Ctx->ArmState.TTBR1_EL1 = 0;
+  Ctx->ArmState.MAIR_EL1  = 0xFF;          // all memory types = normal
+  Ctx->ArmState.CPACR_EL1 = 0x300000;      // FPEN=3 (FP/SIMD enabled)
+  Ctx->ArmState.CNTFRQ_EL0= 24000000;      // 24 MHz timer
+  Ctx->ArmState.VBAR_EL1  = 0;             // exception vector base (identity)
+  Ctx->ArmState.SPSR_EL1  = 0x5;           // EL1, all exceptions masked
+  // MIDR: Apple Icestorm core (ARMv8.5)
+  Ctx->ArmState.MIDR_EL1  = 0x611F0240;
+  Ctx->ArmState.MPIDR_EL1 = 0x80000000;    // single CPU
 
-  DBG((DEBUG_INFO, "DBT: Init OK size=0x%x buf=%p ctx=%p\n", CodeSize, Ctx->TranslatedCode, Ctx));
+  DBG((DEBUG_INFO, "DBT: Init OK size=0x%x buf=%p ctx=%p MMU=%s SCTLR=0x%llx\n",
+       CodeSize, Ctx->TranslatedCode, Ctx,
+       (Ctx->ArmState.SCTLR_EL1 & 1) ? "ON" : "OFF", Ctx->ArmState.SCTLR_EL1));
   return EFI_SUCCESS;
 }
 
@@ -634,4 +813,78 @@ VOID DbtFreeContext (DBT_CONTEXT *Ctx) {
   }
   if (Ctx->KernelPath) FreePool(Ctx->KernelPath);
   gBS->FreePages((UINTN)Ctx, EFI_SIZE_TO_PAGES(sizeof(DBT_CONTEXT) + Ctx->CodeCapacity));
+}
+
+//
+// =========== MMU helpers ===========
+//
+
+/**
+  Identity-map VA to PA (MMU is off or TCR_EL1 forces identity).
+  Returns the physical address for a given virtual address.
+**/
+UINT64 DbtTranslateVaToPa (DBT_CONTEXT *Ctx, UINT64 Va) {
+  if (!Ctx) return Va;
+
+  //
+  // If MMU is disabled (SCTLR_EL1.M = 0), use identity mapping
+  //
+  if ((Ctx->ArmState.SCTLR_EL1 & 1) == 0) {
+    DBG((DEBUG_INFO, "DBT_MMU: MMU OFF — VA 0x%llx -> PA 0x%llx (identity)\n", Va, Va));
+    return Va;
+  }
+
+  //
+  // MMU enabled — walk page tables (stub: identity map for now)
+  //
+  DBG((DEBUG_INFO, "DBT_MMU: MMU ON — identity mapping VA 0x%llx -> PA 0x%llx (stub)\n", Va, Va));
+  return Va;
+}
+
+/**
+  Handle an ARM64 exception (sync, IRQ, FIQ, SError).
+  Updates ESR_EL1, FAR_EL1, ELR_EL1, SPSR_EL1 in the context.
+  Returns the exception vector address (VBAR + offset).
+**/
+UINT64 DbtHandleException (DBT_CONTEXT *Ctx, UINT64 ExceptionType, UINT64 FaultAddr, UINT64 CurrentPc) {
+  if (!Ctx) return 0;
+
+  UINT64  Vbar = Ctx->ArmState.VBAR_EL1;
+  UINT64  VecOff;
+
+  switch (ExceptionType) {
+    case 0:  // Synchronous from current EL with SP_ELx
+      VecOff = 0x000;
+      break;
+    case 1:  // IRQ from current EL
+      VecOff = 0x080;
+      break;
+    case 2:  // FIQ from current EL
+      VecOff = 0x100;
+      break;
+    case 3:  // SError from current EL
+      VecOff = 0x180;
+      break;
+    default:
+      VecOff = 0x000;
+      break;
+  }
+
+  //
+  // Save exception state
+  //
+  Ctx->ArmState.SPSR_EL1 = Ctx->ArmState.PSTATE;
+  Ctx->ArmState.ELR_EL1  = CurrentPc;
+  Ctx->ArmState.ESR_EL1  = (ExceptionType << 26);  // simplified
+  Ctx->ArmState.FAR_EL1  = FaultAddr;
+
+  DBG((DEBUG_WARN, "DBT_EXC: Exception type=%llu at PC=0x%llx FAR=0x%llx -> VBAR=0x%llx Vec=0x%llx\n",
+       ExceptionType, CurrentPc, FaultAddr, Vbar, Vbar + VecOff));
+
+  //
+  // Mask PSTATE for EL1 handler entry
+  //
+  Ctx->ArmState.PSTATE = 0x5;  // EL1, all masked
+
+  return Vbar + VecOff;
 }

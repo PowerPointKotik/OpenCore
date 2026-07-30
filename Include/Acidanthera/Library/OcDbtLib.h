@@ -41,6 +41,11 @@ typedef struct {
   UINT64 CNTV_CVAL_EL0;
   UINT64 ACTLR_EL1;
   UINT64 CPACR_EL1;
+  //
+  // NEON/SIMD register file (Q0-Q31, 128 bits each)
+  //
+  UINT64 Qlo[32];   // Vn.2D[0]
+  UINT64 Qhi[32];   // Vn.2D[1]
 } DBT_ARM64_STATE;
 
 /**
@@ -80,6 +85,20 @@ VOID
 DbtExecute (
   IN DBT_CONTEXT       *Context,
   IN DBT_ARM64_CONTEXT *ArmContext
+  );
+
+UINT64
+DbtTranslateVaToPa (
+  IN DBT_CONTEXT  *Context,
+  IN UINT64       Va
+  );
+
+UINT64
+DbtHandleException (
+  IN DBT_CONTEXT  *Context,
+  IN UINT64       ExceptionType,
+  IN UINT64       FaultAddr,
+  IN UINT64       CurrentPc
   );
 
 EFI_STATUS
