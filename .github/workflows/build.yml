@@ -22,31 +22,31 @@ jobs:
     name: macOS XCODE5
     runs-on: macos-latest
     env:
-      JOB_TYPE: BUILD
-      HOMEBREW_NO_INSTALL_CLEANUP: 1
-      HOMEBREW_NO_AUTO_UPDATE: 1
+        JOB_TYPE: BUILD
+        HOMEBREW_NO_INSTALL_CLEANUP: 1
+        HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
       - uses: actions/checkout@v6
         with:
-         submodules: 'recursive'
-         fetch-depth: 0
+        submodules: 'recursive'
+        fetch-depth: 0
 
       - name: Init git submodules (safety)
         run: |
-         git submodule sync --recursive || true
-         git submodule update --init --recursive || true
+        git submodule sync --recursive || true
+        git submodule update --init --recursive || true
 
       - name: Ensure UDK from dstatstrussia/audk
         run: |
-         UDK_PATH="UDK"
-         if [ -d "$UDK_PATH" ]; then
+        UDK_PATH="UDK"
+        if [ -d "$UDK_PATH" ]; then
            echo "Removing existing $UDK_PATH"
            rm -rf "$UDK_PATH"
-         fi
-         echo "Cloning dstatstrussia/audk into $UDK_PATH"
-         git clone --depth=1 https://github.com/dstatstrussia/audk.git "$UDK_PATH"
-         echo "Creating top-level symlinks for build (MdePkg, MdeModulePkg)"
-         for p in MdePkg MdeModulePkg; do
+        fi
+        echo "Cloning dstatstrussia/audk into $UDK_PATH"
+        git clone --depth=1 https://github.com/dstatstrussia/audk.git "$UDK_PATH"
+        echo "Creating top-level symlinks for build (MdePkg, MdeModulePkg)"
+        for p in MdePkg MdeModulePkg; do
            if [ -e "$p" ] || [ -L "$p" ]; then
              echo "Removing stale $p"
              rm -rf "$p"
@@ -57,9 +57,9 @@ jobs:
            else
              echo "Warning: $UDK_PATH/$p not found"
            fi
-         done
-         echo "Listing linked directories:"
-         ls -la MdePkg MdeModulePkg || true
+        done
+        echo "Listing linked directories:"
+        ls -la MdePkg MdeModulePkg || true
 
       - name: Install Linux Toolchain
         run: |
@@ -74,20 +74,20 @@ jobs:
         run: |
          # Universal Xcode/Developer selection for macOS runners
          # Priority order: specific Xcode (optional), Xcode.app, any Xcode-*.app, CommandLineTools
-         set -euo pipefail
-         SELECTED_DEVELOPER_DIR=""
+        set -euo pipefail
+        SELECTED_DEVELOPER_DIR=""
 
-         echo "Scanning for Xcode and Command Line Tools..."
+        echo "Scanning for Xcode and Command Line Tools..."
 
-         CANDIDATES=(
+        CANDIDATES=(
            "/Applications/Xcode_16.4.0.app"
            "/Applications/Xcode.app"
            /Applications/Xcode-*.app
            /Applications/Xcode_*.app
            "/Library/Developer/CommandLineTools"
-         )
+        )
 
-         for cand in "${CANDIDATES[@]}"; do
+        for cand in "${CANDIDATES[@]}"; do
            # Expand globs that may not match
            for path in $cand; do
               if [ -d "$path" ]; then
@@ -108,48 +108,48 @@ jobs:
                break 2
               fi
           done
-         done
+        done
 
          # Fallback: use existing xcode-select -p if it points somewhere usable
-         if [ -z "$SELECTED_DEVELOPER_DIR" ]; then
+        if [ -z "$SELECTED_DEVELOPER_DIR" ]; then
            xs=$(xcode-select -p 2>/dev/null || true)
            if [ -n "$xs" ] && [ -d "$xs" ]; then
              echo "Using existing xcode-select path: $xs"
              SELECTED_DEVELOPER_DIR="$xs"
            fi
-         fi
+        fi
 
-         echo "xcode-select -p returned: $(xcode-select -p 2>/dev/null || true)"
+        echo "xcode-select -p returned: $(xcode-select -p 2>/dev/null || true)"
 
          # Only export DEVELOPER_DIR if we have a valid path. If not, ensure it's unset so tools fallback to system defaults.
-         if [ -n "$SELECTED_DEVELOPER_DIR" ] && [ -d "$SELECTED_DEVELOPER_DIR" ]; then
+        if [ -n "$SELECTED_DEVELOPER_DIR" ] && [ -d "$SELECTED_DEVELOPER_DIR" ]; then
            export DEVELOPER_DIR="$SELECTED_DEVELOPER_DIR"
            echo "Exported DEVELOPER_DIR=$DEVELOPER_DIR"
-         else
+        else
            echo "WARNING: No Xcode or Command Line Tools found. Continuing without DEVELOPER_DIR — allowing system defaults to be used."
            unset DEVELOPER_DIR || true
-         fi
+        fi
 
          # Diagnostic logs (non-fatal)
-         echo "---- Diagnostics ----"
-         xcodebuild -version || true
-         clang --version || true
-         ls -la /Applications || true
-         ls -la /Library/Developer || true
-         echo "---------------------"
+        echo "---- Diagnostics ----"
+        xcodebuild -version || true
+        clang --version || true
+        ls -la /Applications || true
+        ls -la /Library/Developer || true
+        echo "---------------------"
 
          # Verify xcrun works; if not, unset DEVELOPER_DIR to allow fallback
-         if ! xcrun -v >/dev/null 2>&1; then
+        if ! xcrun -v >/dev/null 2>&1; then
            echo "xcrun not functional with current DEVELOPER_DIR. Unsetting DEVELOPER_DIR to fallback to system tools."
            unset DEVELOPER_DIR || true
-         fi
+        fi
 
          # Download and verify the bootstrap script before execution.
          # Temporarily disable nounset so checks won't abort if CI_BOOTSTRAP_SHA is unset.
-         set +e
-         set +u
-         /usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh -o ci-bootstrap.sh || true
-         if [ -s ci-bootstrap.sh ]; then
+        set +e
+        set +u
+        /usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh -o ci-bootstrap.sh || true
+        if [ -s ci-bootstrap.sh ]; then
            echo "Downloaded ci-bootstrap.sh (size: $(wc -c < ci-bootstrap.sh) bytes)"
            SHASUM=$(shasum -a 256 ci-bootstrap.sh | awk '{print $1}') || SHASUM=""
            echo "Computed SHA256: $SHASUM"
@@ -165,11 +165,11 @@ jobs:
              echo "CI_BOOTSTRAP_SHA not set — skipping SHA verification. Executing ci-bootstrap.sh (non-fatal)."
              bash ci-bootstrap.sh || echo "ci-bootstrap.sh exited with non-zero status (non-fatal in CI context)"
            fi
-         else
+        else
            echo "Failed to download ci-bootstrap.sh — continuing with local build steps for diagnostics"
-         fi
+        fi
          # Re-enable strict mode
-         set -euo pipefail
+        set -euo pipefail
 
       - run: ./build_duet.tool
       - run: ./build_oc.tool
@@ -177,12 +177,12 @@ jobs:
       - name: Upload to Artifacts
         uses: actions/upload-artifact@v6
         with:
-         name: macOS XCODE5 Artifacts
-         path: Binaries/*.zip
+          name: macOS XCODE5 Artifacts
+          path: Binaries/*.zip
       - name: Upload to Release
-         if: github.event_name == 'release'
-         uses: svenstaro/upload-release-action@04733e069f2d7f7f0b4aebc4fbdbce8613b03ccd
-         with:
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@04733e069f2d7f7f0b4aebc4fbdbce8613b03ccd
+        with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: Binaries/*.zip
           tag: ${{ github.ref }}
@@ -192,7 +192,7 @@ jobs:
     name: Linux CLANGPDB
     runs-on: ubuntu-24.04
     env:
-      TOOLCHAINS: CLANGPDB
+        TOOLCHAINS: CLANGPDB
     steps:
       - uses: actions/checkout@v6
         with:
@@ -233,7 +233,7 @@ jobs:
     name: Linux GCC
     runs-on: ubuntu-24.04
     env:
-      TOOLCHAINS: GCC
+        TOOLCHAINS: GCC
     steps:
       - uses: actions/checkout@v6
         with:
@@ -274,7 +274,7 @@ jobs:
     name: Linux CLANGDWARF
     runs-on: ubuntu-24.04
     env:
-      TOOLCHAINS: CLANGDWARF
+        TOOLCHAINS: CLANGDWARF
     steps:
       - uses: actions/checkout@v6
         with:
@@ -345,8 +345,8 @@ jobs:
     name: Windows VS2022
     runs-on: windows-latest
     env:
-      HAS_OPENSSL_BUILD: 0
-      CC: gcc
+        HAS_OPENSSL_BUILD: 0
+        CC: gcc
     steps:
       - uses: actions/checkout@v6
         with:
