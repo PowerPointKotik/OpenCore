@@ -923,29 +923,16 @@ SKIP_READ_APPLE_KERNEL:
   // For ARM64 kernel, use DBT translation
   //
   if (IsArm64 && gDbtContext != NULL) {
-    DBT_ARM64_CONTEXT  ArmContext;
+    DBT_ARM64_STATE  ArmContext;
+  ZeroMem (&ArmContext, sizeof (ArmContext));
+  ArmContext.X[0] = (UINT64)(UINTN)BootArgs;
+  ArmContext.SP   = (UINT64)(UINTN)(StackBuffer + StackSize);
+  ArmContext.PC   = EntryPoint;
+  ArmContext.SPSR_EL1 = 0x5;  // EL1 with all exceptions masked
 
-    ZeroMem (&ArmContext, sizeof (ArmContext));
-    ArmContext.X0 = (UINT64)(UINTN)BootArgs;  // First argument: boot_args
-    ArmContext.SP = (UINT64)(UINTN)(StackBuffer + StackSize);  // Stack grows down
-    ArmContext.PC = EntryPoint;              // Entry point (already virtual address)
+  DEBUG ((DEBUG_INFO, "DirectKernel: SP=0x%llx, PC=0x%llx\n", ArmContext.SP, ArmContext.PC));
 
-    DEBUG ((DEBUG_INFO, "DirectKernel: Executing ARM64 kernel via DBT\n"));
-    DEBUG ((DEBUG_INFO, "DirectKernel: SP=0x%llx, PC=0x%llx\n", ArmContext.SP, ArmContext.PC));
-
-    Status = DbtTranslateBlock (gDbtContext, KernelBuffer, KernelSize, NULL);
-    if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_ERROR, "DirectKernel: DBT translation failed - %r\n", Status));
-      FreePool (StackBuffer);
-      if (DeviceTreeBuffer != NULL) {
-        FreePool (DeviceTreeBuffer);
-      }
-      FreePool (BootArgs);
-      FreePool (KernelBuffer);
-      return Status;
-    }
-
-    DbtExecute (gDbtContext, &ArmContext);
+  DbtExecute (gDbtContext, &ArmContext);
 
     // Should not reach here
     FreePool (StackBuffer);

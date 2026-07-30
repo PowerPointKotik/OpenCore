@@ -10,43 +10,43 @@
 #include <Uefi.h>
 
 /**
-  ARM64 CPU state for translation
+  ARM64 CPU state for translation. Registers stored in memory for save/restore.
+  XZR (register 31) always reads as 0 and ignores writes.
 **/
 typedef struct {
-  UINT64 X0;
-  UINT64 X1;
-  UINT64 X2;
-  UINT64 X3;
-  UINT64 X4;
-  UINT64 X5;
-  UINT64 X6;
-  UINT64 X7;
-  UINT64 X8;
-  UINT64 X9;
-  UINT64 X10;
-  UINT64 X11;
-  UINT64 X12;
-  UINT64 X13;
-  UINT64 X14;
-  UINT64 X15;
-  UINT64 X16;
-  UINT64 X17;
-  UINT64 X18;
-  UINT64 X19;
-  UINT64 X20;
-  UINT64 X21;
-  UINT64 X22;
-  UINT64 X23;
-  UINT64 X24;
-  UINT64 X25;
-  UINT64 X26;
-  UINT64 X27;
-  UINT64 X28;
-  UINT64 FP;
-  UINT64 SP;
-  UINT64 PC;
-  UINT64 SP_SR;
-} DBT_ARM64_CONTEXT;
+  UINT64 X[31];     // X0-X30
+  UINT64 SP;        // Stack pointer
+  UINT64 PC;        // Program counter
+  UINT64 PSTATE;    // NZCV flags at bits 31-28, mode/DAIF at lower bits
+  UINT64 SP_EL0;    // EL0 stack pointer
+  UINT64 SP_EL1;    // EL1 stack pointer
+  UINT64 ELR_EL1;   // Exception link register
+  UINT64 SPSR_EL1;  // Saved PSTATE
+  //
+  // System register stubs
+  //
+  UINT64 SCTLR_EL1;
+  UINT64 TTBR0_EL1;
+  UINT64 TTBR1_EL1;
+  UINT64 TCR_EL1;
+  UINT64 MAIR_EL1;
+  UINT64 VBAR_EL1;
+  UINT64 ESR_EL1;
+  UINT64 FAR_EL1;
+  UINT64 MIDR_EL1;
+  UINT64 MPIDR_EL1;
+  UINT64 CNTFRQ_EL0;
+  UINT64 CNTVCT_EL0;
+  UINT64 CNTV_CTL_EL0;
+  UINT64 CNTV_CVAL_EL0;
+  UINT64 ACTLR_EL1;
+  UINT64 CPACR_EL1;
+} DBT_ARM64_STATE;
+
+/**
+  Compatibility alias
+**/
+typedef DBT_ARM64_STATE DBT_ARM64_CONTEXT;
 
 /**
   DBT translation context (opaque)
