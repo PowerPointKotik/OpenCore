@@ -19,9 +19,9 @@
 #define DBT_VERBOSE  1
 
 #if DBT_VERBOSE
-  #define DBG(expr)  DEBUG (expr)
+  #define DBG(...)  DEBUG (__VA_ARGS__)
 #else
-  #define DBG(expr)
+  #define DBG(...)
 #endif
 
 //
@@ -269,19 +269,19 @@ STATIC UINTN DbtTranslateOne (
       if (Opc == 2) {
         // MOVZ
         UINT64 Val = (UINT64)Imm << (16 * Hw);
-        DBG(("DBT_ASM:    MOVZ X%d, #0x%llx\n", Rd, Val));
+        DBG((DEBUG_INFO, "DBT_ASM:    MOVZ X%d, #0x%llx\n", Rd, Val));
         EmitMovImm(&P, Val);
         EmitStoreRax(&P, RdOff);
       } else {
-        DBG(("DBT_ASM:    MOVK/MOVN (unsupported) -> NOP\n"));
+        DBG((DEBUG_INFO, "DBT_ASM:    MOVK/MOVN (unsupported) -> NOP\n"));
         EmitNop(&P);
       }
     } else if (Sub == 6 || Sub == 7) {
       // Bitfield
-      DBG(("DBT_ASM:    Bitfield -> NOP\n"));
+      DBG((DEBUG_INFO, "DBT_ASM:    Bitfield -> NOP\n"));
       EmitNop(&P);
     } else {
-      DBG(("DBT_ASM:    Unknown immediate -> NOP\n"));
+      DBG((DEBUG_INFO, "DBT_ASM:    Unknown immediate -> NOP\n"));
       EmitNop(&P);
     }
     return (UINTN)(P - X86Buf);
@@ -300,7 +300,7 @@ STATIC UINTN DbtTranslateOne (
       INT64 Off = ((Inst >> 5) & 0x7FFFF) << 2;
       INT64 Val = InstAddr + ((Off << 43) >> 43);
       if ((Inst >> 31) & 1) Val &= ~0xFFF;  // ADRP: page-align
-      DBG(("DBT_ASM:    ADR%s X%d, 0x%llx\n", ((Inst>>31)&1)?"P":"", Rd, Val));
+      DBG((DEBUG_INFO, "DBT_ASM:    ADR%s X%d, 0x%llx\n", ((Inst>>31)&1)?"P":"", Rd, Val));
       EmitMovImm(&P, Val);
       EmitStoreRax(&P, RdOff);
     } else {
@@ -310,7 +310,7 @@ STATIC UINTN DbtTranslateOne (
       BOOLEAN IsSub = (Inst >> 30) & 1;
       BOOLEAN SetFlags = (Inst >> 29) & 1;
 
-      DBG(("DBT_ASM:    %s X%d, X%d, #0x%x%s\n",
+      DBG((DEBUG_INFO, "DBT_ASM:    %s X%d, X%d, #0x%x%s\n",
                IsSub ? "SUB" : "ADD", Rd, Rn, Imm, SetFlags ? " (flags)" : ""));
 
       if (Rn == 31) {
@@ -357,7 +357,7 @@ STATIC UINTN DbtTranslateOne (
 
       if (Opc2 == 1) {
         // STR
-        DBG(("DBT_ASM:    STR X%d, [X%d, #%d]\n", Rt, Rn, Imm7));
+        DBG((DEBUG_INFO, "DBT_ASM:    STR X%d, [X%d, #%d]\n", Rt, Rn, Imm7));
         EmitLoadRax(&P, RtOff);
         EmitLoadRcx(&P, RnOff);
         // ADD RCX, Imm7  → effective address
@@ -367,7 +367,7 @@ STATIC UINTN DbtTranslateOne (
         // Restore: not needed for simple case
       } else if (Opc2 == 3) {
         // LDR
-        DBG(("DBT_ASM:    LDR X%d, [X%d, #%d]\n", Rt, Rn, Imm7));
+        DBG((DEBUG_INFO, "DBT_ASM:    LDR X%d, [X%d, #%d]\n", Rt, Rn, Imm7));
         EmitLoadRcx(&P, RnOff);
         if (Imm7) { EmitAddImm(&P, (UINT32)Imm7); EmitStoreRcx(&P, RnOff); }
         // MOV RAX, [RCX]
@@ -377,7 +377,7 @@ STATIC UINTN DbtTranslateOne (
         // LDP/STP pair
         if (Opc2 == 4) {
           // LDP
-          DBG(("DBT_ASM:    LDP X%d, X%d, [X%d, #%d]\n", Rt, Rt2, Rn, Imm7));
+          DBG((DEBUG_INFO, "DBT_ASM:    LDP X%d, X%d, [X%d, #%d]\n", Rt, Rt2, Rn, Imm7));
           EmitLoadRcx(&P, RnOff);
           if (Imm7) { EmitAddImm(&P, (UINT32)Imm7); EmitStoreRcx(&P, RnOff); }
           EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x01); EmitStoreRax(&P, RtOff);
@@ -386,11 +386,11 @@ STATIC UINTN DbtTranslateOne (
           EmitAddImm(&P, (UINT32)Imm7 + 8); EmitStoreRcx(&P, RnOff);
           EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x01); EmitStoreRax(&P, Rt2Off);
         } else {
-          DBG(("DBT_ASM:    STP X%d, X%d, [X%d, #%d]\n", Rt, Rt2, Rn, Imm7));
+          DBG((DEBUG_INFO, "DBT_ASM:    STP X%d, X%d, [X%d, #%d]\n", Rt, Rt2, Rn, Imm7));
           EmitNop(&P); // simplified
         }
       } else {
-        DBG(("DBT_ASM:    Load/store (opc2=%d) -> NOP\n", Opc2));
+        DBG((DEBUG_INFO, "DBT_ASM:    Load/store (opc2=%d) -> NOP\n", Opc2));
         EmitNop(&P);
       }
     } else {
@@ -403,19 +403,19 @@ STATIC UINTN DbtTranslateOne (
         UINT32 LogicalOp = (Inst >> 29) & 3;
 
         if (LogicalOp == 0) {
-          DBG(("DBT_ASM:    AND%s X%d, X%d, X%d\n", SetFlags ? " (flags)" : "", Rd, Rn, Rm));
+          DBG((DEBUG_INFO, "DBT_ASM:    AND%s X%d, X%d, X%d\n", SetFlags ? " (flags)" : "", Rd, Rn, Rm));
           EmitLoadRax(&P, RnOff);
           EmitAndRaxMem(&P, RmOff);
           if (Rd != 31) EmitStoreRax(&P, RdOff);
           if (SetFlags) EmitUpdateNzcv(&P, PsOff);
         } else if (LogicalOp == 1) {
-          DBG(("DBT_ASM:    ORR%s X%d, X%d, X%d\n", SetFlags ? " (flags)" : "", Rd, Rn, Rm));
+          DBG((DEBUG_INFO, "DBT_ASM:    ORR%s X%d, X%d, X%d\n", SetFlags ? " (flags)" : "", Rd, Rn, Rm));
           EmitLoadRax(&P, RnOff);
           EmitOrRaxMem(&P, RmOff);
           if (Rd != 31) EmitStoreRax(&P, RdOff);
           if (SetFlags) EmitUpdateNzcv(&P, PsOff);
         } else if (LogicalOp == 2) {
-          DBG(("DBT_ASM:    EOR%s X%d, X%d, X%d\n", SetFlags ? " (flags)" : "", Rd, Rn, Rm));
+          DBG((DEBUG_INFO, "DBT_ASM:    EOR%s X%d, X%d, X%d\n", SetFlags ? " (flags)" : "", Rd, Rn, Rm));
           EmitLoadRax(&P, RnOff);
           EmitXorRaxMem(&P, RmOff);
           if (Rd != 31) EmitStoreRax(&P, RdOff);
@@ -425,7 +425,7 @@ STATIC UINTN DbtTranslateOne (
         // ADD/SUB register
         BOOLEAN IsSub = (Opc == 2);
 
-        DBG(("DBT_ASM:    %s%s X%d, X%d, X%d\n",
+        DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, X%d, X%d\n",
                  IsSub ? "SUB" : "ADD", SetFlags ? " (flags)" : "", Rd, Rn, Rm));
 
         EmitLoadRax(&P, RnOff);
@@ -447,13 +447,13 @@ STATIC UINTN DbtTranslateOne (
     if (High3 == 2 || High3 == 1) {
       // Conditional branch (B.cond)
       UINT32 Cond = Inst & 0xF;
-      DBG(("DBT_ASM:    B.COND 0x%x (condition %u) -> NOP\n", Cond, Cond));
+      DBG((DEBUG_INFO, "DBT_ASM:    B.COND 0x%x (condition %u) -> NOP\n", Cond, Cond));
       EmitNop(&P);
     } else if (High3 == 4 || High3 == 5) {
       // Unconditional branch (B)
       INT64 Off = ((Inst >> 0) & 0x3FFFFFF) << 2;
       INT64 Target = InstAddr + ((Off << 36) >> 36);  // sign-extend 26-bit
-      DBG(("DBT_ASM:    B 0x%llx\n", Target));
+      DBG((DEBUG_INFO, "DBT_ASM:    B 0x%llx\n", Target));
       // Update PC
       EmitMovImm(&P, Target);
       EmitStoreRax(&P, PcOff);
@@ -463,12 +463,12 @@ STATIC UINTN DbtTranslateOne (
 
       if (OpcR == 0) {
         // BR
-        DBG(("DBT_ASM:    BR X%d\n", Rn));
+        DBG((DEBUG_INFO, "DBT_ASM:    BR X%d\n", Rn));
         EmitLoadRax(&P, RnOff);
         EmitStoreRax(&P, PcOff);
       } else if (OpcR == 1) {
         // BLR (call)
-        DBG(("DBT_ASM:    BLR X%d\n", Rn));
+        DBG((DEBUG_INFO, "DBT_ASM:    BLR X%d\n", Rn));
         // Save return address (PC+4) to LR (X30)
         EmitMovImm(&P, InstAddr + 4);
         EmitStoreRax(&P, ArmRegXOff(30));
@@ -477,11 +477,11 @@ STATIC UINTN DbtTranslateOne (
         EmitStoreRax(&P, PcOff);
       } else if (OpcR == 2) {
         // RET
-        DBG(("DBT_ASM:    RET X%d\n", Rn));
+        DBG((DEBUG_INFO, "DBT_ASM:    RET X%d\n", Rn));
         EmitLoadRax(&P, RnOff == ArmRegXOff(0) ? ArmRegXOff(30) : RnOff);
         EmitStoreRax(&P, PcOff);
       } else {
-        DBG(("DBT_ASM:    Unknown branch reg -> NOP\n"));
+        DBG((DEBUG_INFO, "DBT_ASM:    Unknown branch reg -> NOP\n"));
         EmitNop(&P);
       }
     } else if (High3 == 0) {
@@ -490,7 +490,7 @@ STATIC UINTN DbtTranslateOne (
       INT64  Target = InstAddr + ((Off << 43) >> 43);
       BOOLEAN NonZero = (Inst >> 24) & 1;
 
-      DBG(("DBT_ASM:    CB%s X%d, 0x%llx\n", NonZero ? "NZ" : "Z", Rt, Target));
+      DBG((DEBUG_INFO, "DBT_ASM:    CB%s X%d, 0x%llx\n", NonZero ? "NZ" : "Z", Rt, Target));
       EmitLoadRax(&P, RtOff);
       EmitRexW(&P); EmitByte(&P, 0x85); EmitByte(&P, 0xC0);  // TEST RAX, RAX
       // If condition matches, branch to target
