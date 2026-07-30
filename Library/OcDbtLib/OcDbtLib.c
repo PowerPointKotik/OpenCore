@@ -690,7 +690,7 @@ EFI_STATUS DbtInitContext (OUT DBT_CONTEXT **Context, IN UINTN CodeSize) {
   TotalSize = sizeof(DBT_CONTEXT) + CodeSize;
   Addr = BASE_4GB;
 
-  Status = gBS->AllocatePages(AllocateMaxAddress, EfiBootServicesData,
+  Status = gBS->AllocatePages (AllocateAnyPages, EfiBootServicesData,
                                EFI_SIZE_TO_PAGES(TotalSize), &Addr);
   if (EFI_ERROR(Status)) return Status;
 

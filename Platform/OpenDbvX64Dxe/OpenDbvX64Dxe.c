@@ -1683,7 +1683,7 @@ OpenDbvX64EntryPoint (
 {
   EFI_STATUS  Status;
 
-  Status = DbtInitContext (&gDbtContext, 0x400000);
+  Status = DbtInitContext (&gDbtContext, 0x100000);
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "DBT: Failed to initialize DBT context - %r\n", Status));
     return Status;
