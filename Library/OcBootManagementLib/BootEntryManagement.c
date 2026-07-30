@@ -32,14 +32,12 @@
 #include <Library/UefiLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 
-#if 0
 STATIC
 EFI_STATUS
 InternalAddBootEntryFromIAPhysicalMedia (
   IN OUT OC_BOOT_CONTEXT     *BootContext,
   IN OUT OC_BOOT_FILESYSTEM  *FileSystem
   );
-#endif
 
 /*
    Expands DevicePath from short-form to full-form.
@@ -2254,14 +2252,8 @@ OcScanForBootEntries (
 
     //
     // Try IA physical media marker for macOS 27 installer detection.
-    // NOTE: The kernel is on the SharedSupport APFS subvolume which may not be mounted.
-    // The DBT fallback (OC_DBT_FALLBACK_PROTOCOL) handles this when entry is selected.
     //
-    // Temporarily disabled: creates a normal entry with NULL DevicePath which
-    // redirects to DBT fallback, but the kernel is inaccessible without
-    // SharedSupport volume mounting. See OpenDbvX64Dxe fallback.
-    //
-    // InternalAddBootEntryFromIAPhysicalMedia (BootContext, FileSystem);
+    InternalAddBootEntryFromIAPhysicalMedia (BootContext, FileSystem);
   }
 
   if (CustomFileSystem != NULL) {
@@ -2668,7 +2660,6 @@ OcLoadBootEntry (
   @retval EFI_SUCCESS if installer entry was created.
   @retval EFI_NOT_FOUND if .IAPhysicalMedia marker was not found.
 **/
-#if 0  // Disabled: created useless entry without DBT fallback
 STATIC
 EFI_STATUS
 InternalAddBootEntryFromIAPhysicalMedia (
@@ -2726,4 +2717,3 @@ InternalAddBootEntryFromIAPhysicalMedia (
    RootDir->Close (RootDir);
   return EFI_NOT_FOUND;
 }
-#endif
