@@ -264,7 +264,6 @@ STATIC UINTN DbtTranslateOne (
       UINT32 Hw  = (Inst >> 21) & 3;
       UINT16 Imm = (Inst >> 5) & 0xFFFF;
       UINT32 Opc = (Inst >> 29) & 3;
-      BOOLEAN Is64 = (Inst >> 31) & 1;
 
       if (Opc == 2) {
         // MOVZ
@@ -639,7 +638,6 @@ STATIC UINTN DbtTranslateOne (
       UINT8   Vn       = Arm64Rn(Inst);
       UINT8   Vm       = Arm64Rm(Inst);
       BOOLEAN IsScalar  = ((Inst >> 28) & 1) == 1;
-      BOOLEAN IsDword   = ((Inst >> 22) & 1) == 0;  // D-form vs Q-form
 
       if (SIMD_sub == 1) {
         DBG((DEBUG_INFO, "DBT_SIMD: FADD %c%d, %c%d, %c%d\n",
