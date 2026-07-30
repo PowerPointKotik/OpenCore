@@ -478,7 +478,10 @@ OcApfsConnectHandle (
   //
   // In the end of successful APFS or some other driver connection
   // we have a filesystem driver.
-  // We have nothing to do if the device is already connected.
+  // For APFS containers, we still try to load apfs.efi even if another
+  // FS driver is already connected (e.g. HfsPlusLegacy), because apfs.efi
+  // creates additional subvolume handles (Recovery, Preboot, SharedSupport)
+  // that the generic driver does not provide.
   //
   Status = gBS->HandleProtocol (
                   Handle,
@@ -486,8 +489,10 @@ OcApfsConnectHandle (
                   &TempProtocol
                   );
   if (!EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_VERBOSE, "OCJS: FS already connected\n"));
-    return EFI_ALREADY_STARTED;
+    DEBUG ((DEBUG_INFO, "OCJS: FS already connected — forcing APFS driver load for subvolumes\n"));
+    //
+    // Do NOT return early — continue to load apfs.efi for subvolume access
+    //
   }
 
   //
