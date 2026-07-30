@@ -137,6 +137,11 @@ STATIC VOID EmitAddImm (UINT8 **P, UINT32 Imm) {
   EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xC0); EmitDword(P, Imm);
 }
 
+// ADD RCX, imm32
+STATIC VOID EmitAddRcxImm (UINT8 **P, UINT32 Imm) {
+  EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xC1); EmitDword(P, Imm);
+}
+
 // SUB RAX, imm32
 STATIC VOID EmitSubImm (UINT8 **P, UINT32 Imm) {
   EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xE8); EmitDword(P, Imm);
@@ -346,38 +351,43 @@ STATIC UINTN DbtTranslateOne (
       INT32  Imm7 = ((Inst >> 15) & 0x7F) << (Size == 0 ? 0 : Size);  // scale
 
       if (Opc2 == 1) {
-        // STR
+        // STR: store Rt to [Rn + offset]
         DBG((DEBUG_INFO, "DBT_ASM:    STR X%d, [X%d, #%d]\n", Rt, Rn, Imm7));
-        EmitLoadRax(&P, RtOff);
-        EmitLoadRcx(&P, RnOff);
-        // ADD RCX, Imm7  → effective address
-        if (Imm7) { EmitAddImm(&P, (UINT32)Imm7); EmitStoreRcx(&P, RnOff); }
+        EmitLoadRax(&P, RtOff);           // RAX = value to store
+        EmitLoadRcx(&P, RnOff);           // RCX = base address
+        if (Imm7) { EmitAddRcxImm(&P, (UINT32)Imm7); }  // RCX += offset
         // MOV [RCX], RAX
-        EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x01);  // MOV [RCX], RAX (simplified)
-        // Restore: not needed for simple case
+        EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x01);
       } else if (Opc2 == 3) {
-        // LDR
+        // LDR: load Rt from [Rn + offset]
         DBG((DEBUG_INFO, "DBT_ASM:    LDR X%d, [X%d, #%d]\n", Rt, Rn, Imm7));
-        EmitLoadRcx(&P, RnOff);
-        if (Imm7) { EmitAddImm(&P, (UINT32)Imm7); EmitStoreRcx(&P, RnOff); }
+        EmitLoadRcx(&P, RnOff);           // RCX = base address
+        if (Imm7) { EmitAddRcxImm(&P, (UINT32)Imm7); }  // RCX += offset
         // MOV RAX, [RCX]
-        EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x01);  // MOV RAX, [RCX] (simplified)
-        EmitStoreRax(&P, RtOff);
+        EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x01);
+        EmitStoreRax(&P, RtOff);          // store to Rt
       } else if (Opc2 == 2 || Opc2 == 4) {
         // LDP/STP pair
         if (Opc2 == 4) {
           // LDP
           DBG((DEBUG_INFO, "DBT_ASM:    LDP X%d, X%d, [X%d, #%d]\n", Rt, Rt2, Rn, Imm7));
-          EmitLoadRcx(&P, RnOff);
-          if (Imm7) { EmitAddImm(&P, (UINT32)Imm7); EmitStoreRcx(&P, RnOff); }
-          EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x01); EmitStoreRax(&P, RtOff);
-          // second load at +8
-          EmitLoadRcx(&P, RnOff);
-          EmitAddImm(&P, (UINT32)Imm7 + 8); EmitStoreRcx(&P, RnOff);
-          EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x01); EmitStoreRax(&P, Rt2Off);
+          EmitLoadRcx(&P, RnOff);                  // RCX = base
+          if (Imm7) { EmitAddRcxImm(&P, (UINT32)Imm7); }  // RCX += offset
+          // First load: MOV RAX, [RCX]
+          EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x01);
+          EmitStoreRax(&P, RtOff);
+          // Second load at +8: MOV RAX, [RCX+8]
+          EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x41); EmitByte(&P, 0x08);
+          EmitStoreRax(&P, Rt2Off);
         } else {
+          // STP
           DBG((DEBUG_INFO, "DBT_ASM:    STP X%d, X%d, [X%d, #%d]\n", Rt, Rt2, Rn, Imm7));
-          EmitNop(&P); // simplified
+          EmitLoadRcx(&P, RnOff);                  // RCX = base
+          if (Imm7) { EmitAddRcxImm(&P, (UINT32)Imm7); }  // RCX += offset
+          EmitLoadRax(&P, RtOff);                  // RAX = first value
+          EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x01);  // MOV [RCX], RAX
+          EmitLoadRax(&P, Rt2Off);                 // RAX = second value
+          EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x41); EmitByte(&P, 0x08);  // MOV [RCX+8], RAX
         }
       } else {
         DBG((DEBUG_INFO, "DBT_ASM:    Load/store (opc2=%d) -> NOP\n", Opc2));
