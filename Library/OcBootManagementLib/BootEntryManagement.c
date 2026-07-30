@@ -32,12 +32,14 @@
 #include <Library/UefiLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 
+#if 0
 STATIC
 EFI_STATUS
 InternalAddBootEntryFromIAPhysicalMedia (
   IN OUT OC_BOOT_CONTEXT     *BootContext,
   IN OUT OC_BOOT_FILESYSTEM  *FileSystem
   );
+#endif
 
 /*
    Expands DevicePath from short-form to full-form.
