@@ -143,14 +143,17 @@ jobs:
          fi
 
          # Download and run the bootstrap script. If it fails, emit diagnostics but don't mask useful errors.
+         # Temporarily disable 'nounset' so remote script references to unset vars (e.g. ACID32) won't abort the workflow.
          set +e
+         set +u
          src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) || true
          if [ -n "$src" ]; then
            eval "$src" || echo "ci-bootstrap.sh exited with non-zero status (non-fatal in CI context)"
          else
            echo "Failed to download ci-bootstrap.sh — continuing with local build steps for diagnostics"
          fi
-         set -e
+         # Re-enable strict mode
+         set -euo pipefail
 
       - run: ./build_duet.tool
       - run: ./build_oc.tool
@@ -160,14 +163,14 @@ jobs:
         with:
          name: macOS XCODE5 Artifacts
          path: Binaries/*.zip
-      - name: Upload to Release
-        if: github.event_name == 'release'
-        uses: svenstaro/upload-release-action@04733e069f2d7f7f0b4aebc4fbdbce8613b03ccd
-        with:
-         repo_token: ${{ secrets.GITHUB_TOKEN }}
-         file: Binaries/*.zip
-         tag: ${{ github.ref }}
-         file_glob: true
+       - name: Upload to Release
+         if: github.event_name == 'release'
+         uses: svenstaro/upload-release-action@04733e069f2d7f7f0b4aebc4fbdbce8613b03ccd
+         with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: Binaries/*.zip
+          tag: ${{ github.ref }}
+          file_glob: true
 
   build-linux-clangpdb:
     name: Linux CLANGPDB
@@ -421,3 +424,4 @@ jobs:
         with:
           name: Windows Artifacts
           path: Binaries/*.zip
+
