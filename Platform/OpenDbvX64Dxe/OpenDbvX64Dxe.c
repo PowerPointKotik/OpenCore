@@ -1644,16 +1644,20 @@ OcGetDbtBootEntries (
     NewEntries[0].UnmanagedBootAction             = DbtBootEntryAction;
     NewEntries[0].UnmanagedBootGetFinalDevicePath = NULL;
     //
-    // Provide a minimal valid device path (single end node).
-    // Must be non-NULL for entry creation.
+    // Provide a file path device path so the picker can render the entry.
+    // A bare end node crashes the picker's icon matcher.
     //
     {
-      EFI_DEVICE_PATH_PROTOCOL  *Dp;
-      Dp = AllocateZeroPool (sizeof (EFI_DEVICE_PATH_PROTOCOL));
-      if (Dp != NULL) {
-        SetDevicePathEndNode (Dp);
+      FILEPATH_DEVICE_PATH  *Fp;
+      UINTN                 FpSize = SIZE_OF_FILEPATH_DEVICE_PATH + sizeof (CHAR16);
+      Fp = AllocateZeroPool (FpSize);
+      if (Fp != NULL) {
+        Fp->Header.Type    = MEDIA_DEVICE_PATH;
+        Fp->Header.SubType = MEDIA_FILEPATH_DP;
+        SetDevicePathNodeLength (&Fp->Header, (UINT16)FpSize);
+        Fp->PathName[0]    = L'\0';
       }
-      NewEntries[0].UnmanagedDevicePath = Dp;
+      NewEntries[0].UnmanagedDevicePath = (EFI_DEVICE_PATH_PROTOCOL *)Fp;
     }
 
     *Entries    = NewEntries;
