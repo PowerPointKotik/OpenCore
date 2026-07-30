@@ -70,8 +70,37 @@ jobs:
 
       - name: CI Bootstrap
         run: |
+         # Try to select an installed Xcode from common locations in /Applications.
+         # This avoids exporting a DEVELOPER_DIR that doesn't exist on the runner.
+         SELECTED_XCODE=""
+         for candidate in /Applications/Xcode.app /Applications/Xcode-*.app /Applications/Xcode_*.app; do
+           if [ -d "$candidate" ]; then
+             echo "Selecting Xcode at $candidate"
+             sudo xcode-select -s "$candidate/Contents/Developer" || true
+             SELECTED_XCODE="$candidate"
+             break
+           fi
+         done
+
+         # Show what xcode-select returns, then export DEVELOPER_DIR
+         xcode_select_out=$(xcode-select -p 2>/dev/null || true)
+         echo "xcode-select -p returned: $xcode_select_out"
          export DEVELOPER_DIR=$(xcode-select -p) 2>/dev/null || true
          echo "Using DEVELOPER_DIR=$DEVELOPER_DIR"
+
+         # Fail fast with a clear message if DEVELOPER_DIR does not exist
+         if [ -z "$DEVELOPER_DIR" ] || [ ! -d "$DEVELOPER_DIR" ]; then
+           echo "ERROR: No usable Xcode installation found in /Applications. DEVELOPER_DIR is: '$DEVELOPER_DIR'"
+           echo "Installed /Applications contents:"
+           ls -la /Applications || true
+           exit 1
+         fi
+
+         # Log versions for debugging
+         xcodebuild -version || true
+         clang --version || true
+
+         # Download and run the bootstrap script
          src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
 
       - run: ./build_duet.tool
@@ -276,7 +305,7 @@ jobs:
         shell: cmd
         run: |
           choco install make nasm zip iasl --no-progress
-          "%pythonLocation%\python.exe" -m pip install setuptools --quiet --force-reinstall
+          "%pythonLocation%\\python.exe" -m pip install setuptools --quiet --force-reinstall
 
       - name: CI Bootstrap
         shell: bash
