@@ -1686,8 +1686,7 @@ OpenDbvX64EntryPoint (
     return Status;
   }
 
-  DEBUG ((DEBUG_INFO, "DBT: ARM64->x86_64 initialized for DirectKernel (CodeBuf=%p size=%u ctx=%p)\n",
-          gDbtContext->TranslatedCode, 0x100000, gDbtContext));
+  DEBUG ((DEBUG_INFO, "DBT: ARM64->x86_64 initialized for DirectKernel\n"));
 
   //
   // Install DBT fallback protocol — GUID + function pointer
