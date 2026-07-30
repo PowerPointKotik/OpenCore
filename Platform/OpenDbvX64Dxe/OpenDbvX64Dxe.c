@@ -71,9 +71,9 @@ ReadKernelFromZip (
   EFI_FILE_INFO      *Info;
   UINTN              InfoSize;
   UINT32             EocdOffset;
-  UINT32             CentralDirOffset;
-  UINT32             CentralDirSize;
-  UINT16             TotalEntries;
+  UINT64             CentralDirOffset;
+  UINT64             CentralDirSize;
+  UINT64             TotalEntries;
   UINTN              I;
   UINT32             LocalOffset     = 0;
   UINT32             UncompSize      = 0;
@@ -179,8 +179,8 @@ ReadKernelFromZip (
           ReadSize = 56;
           Status = ZipFile->Read (ZipFile, &ReadSize, Zip64Buf);
           if (!EFI_ERROR (Status) && (*(UINT32 *)Zip64Buf == 0x06064B50U)) {
-            CentralDirSize   = (UINT32)*(UINT64 *)(Zip64Buf + 40);
-            CentralDirOffset = (UINT32)*(UINT64 *)(Zip64Buf + 48);
+          CentralDirSize   = *(UINT64 *)(Zip64Buf + 40);
+            CentralDirOffset = *(UINT64 *)(Zip64Buf + 48);
           }
         }
       }
