@@ -822,7 +822,12 @@ DirectLoadKernel (
   }
 
 SKIP_READ_APPLE_KERNEL:
-  if (!EFI_ERROR (Status) && KernelFile != NULL) {
+  //
+  // If kernel was extracted from ZIP, AllocatedSize > 0 and KernelBuffer is set.
+  // Close KernelFile since we don't need it for ReadAppleKernel.
+  // For the normal path (kernel from file), KernelFile stays open.
+  //
+  if (AllocatedSize > 0 && KernelBuffer != NULL && KernelFile != NULL) {
     KernelFile->Close (KernelFile);
     KernelFile = NULL;
   }
