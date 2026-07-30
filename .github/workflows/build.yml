@@ -14,6 +14,8 @@ env:
   HAS_OPENSSL_BUILD: 1
   HAS_OPENSSL_W32BUILD: 0
   WERROR: 1
+  # Optional: set the expected SHA256 of the remote ci-bootstrap.sh to enable verification
+  CI_BOOTSTRAP_SHA: ""
 
 jobs:
   build-macos:
@@ -142,13 +144,27 @@ jobs:
            unset DEVELOPER_DIR || true
          fi
 
-         # Download and run the bootstrap script. If it fails, emit diagnostics but don't mask useful errors.
-         # Temporarily disable 'nounset' so remote script references to unset vars (e.g. ACID32) won't abort the workflow.
+         # Download and verify the bootstrap script before execution.
+         # Temporarily disable nounset so checks won't abort if CI_BOOTSTRAP_SHA is unset.
          set +e
          set +u
-         src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) || true
-         if [ -n "$src" ]; then
-           eval "$src" || echo "ci-bootstrap.sh exited with non-zero status (non-fatal in CI context)"
+         /usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh -o ci-bootstrap.sh || true
+         if [ -s ci-bootstrap.sh ]; then
+           echo "Downloaded ci-bootstrap.sh (size: $(wc -c < ci-bootstrap.sh) bytes)"
+           SHASUM=$(shasum -a 256 ci-bootstrap.sh | awk '{print $1}') || SHASUM=""
+           echo "Computed SHA256: $SHASUM"
+
+           if [ -n "${CI_BOOTSTRAP_SHA:-}" ]; then
+             if [ "$SHASUM" = "$CI_BOOTSTRAP_SHA" ]; then
+               echo "SHA matches expected ($CI_BOOTSTRAP_SHA). Executing ci-bootstrap.sh"
+               bash ci-bootstrap.sh || echo "ci-bootstrap.sh exited with non-zero status (non-fatal in CI context)"
+             else
+               echo "ERROR: SHA mismatch for ci-bootstrap.sh (expected $CI_BOOTSTRAP_SHA, got $SHASUM). Skipping execution for safety."
+             fi
+           else
+             echo "CI_BOOTSTRAP_SHA not set — skipping SHA verification. Executing ci-bootstrap.sh (non-fatal)."
+             bash ci-bootstrap.sh || echo "ci-bootstrap.sh exited with non-zero status (non-fatal in CI context)"
+           fi
          else
            echo "Failed to download ci-bootstrap.sh — continuing with local build steps for diagnostics"
          fi
