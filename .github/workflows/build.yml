@@ -285,40 +285,33 @@ jobs:
           "%pythonLocation%\python.exe" -m pip install setuptools --quiet --force-reinstall
 
       - name: CI Bootstrap
-        shell: bash
+        shell: cmd
         env:
           PYTHON_COMMAND: ${{ steps.python.outputs.python-path }}
         run: |
-          echo "=== Python detection ==="
-          echo "PYTHON_COMMAND from setup-python: $PYTHON_COMMAND"
-          # Convert bash-style path to Windows if needed (e.g., /c/... -> C:\...)
-          if [[ "$PYTHON_COMMAND" == /c/* ]]; then
-            PYTHON_COMMAND=$(cmd /c "echo ${PYTHON_COMMAND/\/c\//C:\\}" 2>/dev/null | tr -d '\r' || echo "$PYTHON_COMMAND")
-          echo "Converted PYTHON_COMMAND: $PYTHON_COMMAND"
-          fi
-          # Ensure python is in cmd PATH for nmake detection
-          if ! cmd /c 'where python >/dev/null 2>&1' 2>/dev/null; then
-          echo "Adding python to cmd PATH..."
-            PYTHON_CMD_DIR=$(cmd /c 'echo %PYTHON_COMMAND%' 2>/dev/null | tr -d '\r' | sed 's|\\[^\\]*$||')
-            if [ -n "$PYTHON_CMD_DIR" ]; then
-              PYTHON_COMMAND="$PYTHON_CMD_DIR\\python.exe"
-            echo "Adjusted PYTHON_COMMAND: $PYTHON_COMMAND"
-          fi
-          fi
-          export PATH="/c/ProgramData/chocolatey/bin:$PATH"
-          src=$(curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
+          echo === Python detection ===
+          echo PYTHON_COMMAND from setup-python: %PYTHON_COMMAND%
+          REM Use Python path directly from setup-python
+          set "PYTHON_CMD=%PYTHON_COMMAND%"
+          if not exist "%PYTHON_CMD%" (
+            echo Error: Python executable not found at %PYTHON_CMD%
+            exit /b 1
+          )
+          echo Python path verified: %PYTHON_CMD%
+          REM Run the CI bootstrap script
+          for /f "delims=" %%i in ('powershell -Command "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh')"') do set "src=%%i"
+          if errorlevel 1 exit /b 1
+          powershell -Command "%src%" || exit /b 1
 
       - name: Build Duet
-        shell: bash
+        shell: cmd
         run: |
-          export PATH="/c/ProgramData/chocolatey/bin:$PATH"
-          ./build_duet.tool
+          call .\build_duet.tool
 
       - name: Build OpenCore
-        shell: bash
+        shell: cmd
         run: |
-          export PATH="/c/ProgramData/chocolatey/bin:$PATH"
-          ./build_oc.tool
+          call .\build_oc.tool
 
       - name: Upload to Artifacts
         uses: actions/upload-artifact@v6
