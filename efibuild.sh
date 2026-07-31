@@ -136,7 +136,7 @@ symlink() {
   if [ "$(unamer)" = "Windows" ]; then
     rm -rf "$2"
     mkdir -p "$2" || exit 1
-    for i in "$1"/Legacy "$1"/Platform "$1"/Application "$1"/Library "$1"/Utilities "$1"/Include "$1"/User "$1"/Staging "$1"/Tests "$1"/Patches "$1"/Docs ; do
+    for i in "$1"/Legacy "$1"/Platform "$1"/Application "$1"/Library "$1"/Utilities "$1"/Include "$1"/User "$1"/Staging "$1"/Tests "$1"/Patches "$1"/Docs "$1"/Debug ; do
       if [ -e "${i}" ]; then
         cp -r "${i}" "$2" || exit 1
       fi
