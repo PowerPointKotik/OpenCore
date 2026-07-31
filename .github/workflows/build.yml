@@ -315,6 +315,8 @@ jobs:
 
       - name: Build Duet
         shell: bash
+        env:
+          CL: ""
         run: |
            # Fix Windows PATH: remove MSYS2/Git Bash tools that shadow MSVC
            export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '/usr/bin' | grep -v '/mingw64/bin' | tr '\n' ':')
@@ -323,6 +325,8 @@ jobs:
 
       - name: Build OpenCore
         shell: bash
+        env:
+          CL: ""
         run: |
           export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '/usr/bin' | grep -v '/mingw64/bin' | tr '\n' ':')
           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
