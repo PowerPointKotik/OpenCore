@@ -948,10 +948,10 @@ SKIP_READ_APPLE_KERNEL:
         // Skip flavor and count to get to actual thread state values
         ThreadState = (UINT64 *)((UINTN)ThreadState + 8);
 
-        // ARM64_THREAD_STATE: flavor=6, PC at index 31 (after x0-x28, fp, sp)
-        if (Flavor == ARM64_THREAD_STATE_FLAVOR && Count >= 32) {
-          if ((UINTN)&ThreadState[31] <= (UINTN)KernelBuffer + KernelSize) {
-            EntryPoint = ThreadState[31];
+        // ARM64_THREAD_STATE: flavor=6, PC at index 32 (x0-x28=29, fp, lr, sp, pc, cpsr)
+        if (Flavor == ARM64_THREAD_STATE_FLAVOR && Count >= 34) {
+          if ((UINTN)&ThreadState[32] <= (UINTN)KernelBuffer + KernelSize) {
+            EntryPoint = ThreadState[32];
           }
         }
         break;
