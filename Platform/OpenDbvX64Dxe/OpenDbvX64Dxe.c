@@ -932,6 +932,7 @@ SKIP_READ_APPLE_KERNEL:
 
     for (Index = 0; Index < Header64->NumCommands; ++Index) {
       if (Cmd->CommandType == MACH_LOAD_COMMAND_UNIX_THREAD) {
+        DEBUG ((DEBUG_INFO, "DirectKernel: Found LC_UNIXTHREAD at index %u\n", Index));
         UINT32   Flavor;
         UINT32   Count;
         UINT64   *ThreadState;
@@ -945,10 +946,12 @@ SKIP_READ_APPLE_KERNEL:
         Flavor = *((UINT32 *)ThreadState);
         Count = *((UINT32 *)((UINTN)ThreadState + 4));
 
+        DEBUG ((DEBUG_INFO, "DirectKernel: LC_UNIXTHREAD flavor=%u count=%u\n", Flavor, Count));
+
         // Skip flavor and count to get to actual thread state values
         ThreadState = (UINT64 *)((UINTN)ThreadState + 8);
 
-        // ARM64_THREAD_STATE: flavor=6, PC at index 32 (x0-x28=29, fp, lr, sp, pc, cpsr)
+        // ARM64_THREAD_STATE: flavor=6, PC at index 32
         if (Flavor == ARM64_THREAD_STATE_FLAVOR && Count >= 34) {
           if ((UINTN)&ThreadState[32] <= (UINTN)KernelBuffer + KernelSize) {
             EntryPoint = ThreadState[32];
@@ -961,11 +964,7 @@ SKIP_READ_APPLE_KERNEL:
         //
         UINT64  *MainData = (UINT64 *)((UINTN)Cmd + 8);
         UINT64   FileOff  = MainData[0];
-        DEBUG ((DEBUG_INFO, "DirectKernel: Found LC_MAIN fileoff=0x%llx\n", FileOff));
-        //
-        // For kernelcaches, fileoff is relative to Mach-O start.
-        // Entry VM address = KernelBuffer + fileoff (since KernelBuffer starts at offset 0).
-        //
+        DEBUG ((DEBUG_INFO, "DirectKernel: Found LC_MAIN at index %u fileoff=0x%llx\n", Index, FileOff));
         EntryPoint = (UINT64)(UINTN)KernelBuffer + FileOff;
         DEBUG ((DEBUG_INFO, "DirectKernel: LC_MAIN VM entry=0x%llx\n", EntryPoint));
         break;
