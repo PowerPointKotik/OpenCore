@@ -20,7 +20,6 @@ jobs:
     name: macOS XCODE5
     runs-on: macos-latest
     env:
-      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       JOB_TYPE: BUILD
       HOMEBREW_NO_INSTALL_CLEANUP: 1
       HOMEBREW_NO_AUTO_UPDATE: 1
@@ -74,11 +73,6 @@ jobs:
          export DEVELOPER_DIR=$(xcode-select -p) 2>/dev/null || true
          echo "Using DEVELOPER_DIR=$DEVELOPER_DIR"
          src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
-
-      - name: Fix Xcode path
-        run: |
-         sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
-         unset DEVELOPER_DIR
 
       - run: ./build_duet.tool
       - run: ./build_oc.tool
