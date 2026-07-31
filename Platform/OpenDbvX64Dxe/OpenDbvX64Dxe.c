@@ -960,8 +960,14 @@ SKIP_READ_APPLE_KERNEL:
         // entry_point_command: cmd(4) + cmdsize(4) + entryoff(8) + stacksize(8)
         //
         UINT64  *MainData = (UINT64 *)((UINTN)Cmd + 8);
-        EntryPoint = MainData[0];
-        DEBUG ((DEBUG_INFO, "DirectKernel: Found LC_MAIN entryoff=0x%llx\n", EntryPoint));
+        UINT64   FileOff  = MainData[0];
+        DEBUG ((DEBUG_INFO, "DirectKernel: Found LC_MAIN fileoff=0x%llx\n", FileOff));
+        //
+        // For kernelcaches, fileoff is relative to Mach-O start.
+        // Entry VM address = KernelBuffer + fileoff (since KernelBuffer starts at offset 0).
+        //
+        EntryPoint = (UINT64)(UINTN)KernelBuffer + FileOff;
+        DEBUG ((DEBUG_INFO, "DirectKernel: LC_MAIN VM entry=0x%llx\n", EntryPoint));
         break;
       }
       Cmd = (MACH_LOAD_COMMAND *)((UINTN)Cmd + Cmd->CommandSize);
