@@ -315,12 +315,16 @@ jobs:
       - name: Build Duet
         shell: bash
         run: |
+          # Workaround GitHub Actions Windows runner bug:
+          # /usr/bin/link (GNU coreutils) shadows MSVC link.exe
+          mv /usr/bin/link.exe /usr/bin/link.exe.bak 2>/dev/null || true
           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
           ./build_duet.tool
 
       - name: Build OpenCore
         shell: bash
         run: |
+          mv /usr/bin/link.exe.bak /usr/bin/link.exe 2>/dev/null || true
           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
           ./build_oc.tool
 
