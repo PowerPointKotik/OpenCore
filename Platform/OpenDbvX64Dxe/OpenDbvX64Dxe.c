@@ -955,6 +955,14 @@ SKIP_READ_APPLE_KERNEL:
           }
         }
         break;
+      } else if (Cmd->CommandType == 0x80000028U) {  // LC_MAIN
+        //
+        // entry_point_command: cmd(4) + cmdsize(4) + entryoff(8) + stacksize(8)
+        //
+        UINT64  *MainData = (UINT64 *)((UINTN)Cmd + 8);
+        EntryPoint = MainData[0];
+        DEBUG ((DEBUG_INFO, "DirectKernel: Found LC_MAIN entryoff=0x%llx\n", EntryPoint));
+        break;
       }
       Cmd = (MACH_LOAD_COMMAND *)((UINTN)Cmd + Cmd->CommandSize);
     }
