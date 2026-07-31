@@ -717,6 +717,9 @@ if [ "$(unamer)" = "Windows" ]; then
      if [ -z "${norm}" ] ; then
        norm="${entry}"
      fi
+     # Keep only directories that exist: this drops the MSYS2-mangled
+     # Visual Studio entries and keeps PATH short.
+     [ -d "${norm}" ] || continue
      if [ -z "${normalized_path}" ] ; then
        normalized_path="${norm}"
      else
@@ -724,6 +727,12 @@ if [ "$(unamer)" = "Windows" ]; then
      fi
    done
    export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:${normalized_path}"
+   # Drop the huge VS dev-cmd variables. Combined with a long PATH they push
+   # the process environment block past cmd.exe's ~32K limit, so cmd loses
+   # PATH entirely and cannot resolve any external command.
+   for _v in $(printenv | grep -oE '^[A-Za-z_][A-Za-z0-9_]*' | grep -E '^(__VSCMD|VSCMD|LIBPATH|WindowsSDK|WindowsLibPath|WindowsSdk|UCRT|UniversalCRT|VCINSTALLDIR|VCTools|VisualStudioVersion|VSINSTALLDIR|VSSDK|VS1[789]0COMNTOOLS|__DOTNET|use_x64_llvm|VCPKG|VCIDEInstallDir)') ; do
+     unset "${_v}"
+   done
    echo "=== Path diagnostics ==="
    ls "${BASE_TOOLS}/Bin/Win32/GenSec.exe" 2>/dev/null && echo "GenSec.exe present in Bin/Win32" || echo "GenSec.exe MISSING in Bin/Win32"
    python "${ROOTDIR}/Utilities/path_diag.py"

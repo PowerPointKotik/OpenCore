@@ -3,7 +3,9 @@ import subprocess
 import sys
 
 p = os.environ.get('PATH', '')
+env_size = sum(len(k) + len(v) + 2 for k, v in os.environ.items())
 print('PYTHON_VERSION=' + sys.version.split()[0])
+print('ENV_BLOCK_SIZE=' + str(env_size))
 print('PATH_LEN=' + str(len(p)))
 print('PATH_FIRST_300=' + p[:300])
 print('PATH_LAST_300=' + p[-300:])
