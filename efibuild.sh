@@ -154,8 +154,8 @@ if [ "$(unamer)" = "Windows" ]; then
     # Find Python for nmake - must be available as 'python' command in Windows PATH
     # GitHub Actions installs Python in hostedtoolcache, may need explicit setup
     # Note: command -v python works in bash but not in cmd, need to check cmd too
-    if cmd /c 'where python >/dev/null 2>&1' 2>/dev/null; then
-      echo "Found python in cmd PATH at: $(cmd /c 'where python' 2>/dev/null | tr -d '\r')"
+    if cmd /d /c 'where python >/dev/null 2>&1' 2>/dev/null; then
+      echo "Found python in cmd PATH at: $(cmd /d /c 'where python' 2>/dev/null | tr -d '\r')"
     elif command -v python >/dev/null 2>&1; then
       # Python found in bash but not cmd - this is GitHub Actions behavior
       echo "Found python at: $(which python) (bash only, will resolve for cmd)"
@@ -185,7 +185,7 @@ if [ "$(unamer)" = "Windows" ]; then
       echo "Using existing PYTHON_COMMAND: $PYTHON_COMMAND"
     elif command -v py >/dev/null 2>&1; then
       # Use py launcher to get the actual python.exe directory and construct full path
-      PYTHON_DIR=$(cmd /c 'py -3 -c "import os, sys; print(os.path.dirname(sys.executable))"' 2>/dev/null | tr -d '\r')
+      PYTHON_DIR=$(cmd /d /c 'py -3 -c "import os, sys; print(os.path.dirname(sys.executable))"' 2>/dev/null | tr -d '\r' | tail -1)
       echo "DEBUG: Python directory from py launcher: '$PYTHON_DIR'"
       if [ -n "$PYTHON_DIR" ] && [[ "$PYTHON_DIR" == *":"* ]]; then
         export PYTHON_COMMAND="${PYTHON_DIR}\\python.exe"
@@ -535,11 +535,23 @@ mkdir -p MdePkg/Include/Intel/IndustryStandard || exit 1
   echo 'typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_ALL_APS;'
   echo 'typedef EFI_AP_PROCEDURE EFI_MP_SERVICES_STARTUP_THIS_AP;'
   echo '#endif'
-  cat ../Include/Intel/IndustryStandard/AppleIntelCpuInfo.h
+  if [ -f ../Include/Intel/IndustryStandard/AppleIntelCpuInfo.h ]; then
+    cat ../Include/Intel/IndustryStandard/AppleIntelCpuInfo.h
+  elif [ -f OpenCorePkg/Include/Intel/IndustryStandard/AppleIntelCpuInfo.h ]; then
+    cat OpenCorePkg/Include/Intel/IndustryStandard/AppleIntelCpuInfo.h
+  fi
 } > MdePkg/Include/Intel/IndustryStandard/AppleIntelCpuInfo.h || exit 1
-cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Intel/IndustryStandard/ || exit 1
+if [ -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h ]; then
+  cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Intel/IndustryStandard/ || exit 1
+elif [ -f OpenCorePkg/Include/Apple/IndustryStandard/AppleIntelCpuInfo.h ]; then
+  cp -f OpenCorePkg/Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Intel/IndustryStandard/ || exit 1
+fi
 mkdir -p MdePkg/Include/Apple/IndustryStandard || exit 1
-cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Apple/IndustryStandard/ || exit 1
+if [ -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h ]; then
+  cp -f ../Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Apple/IndustryStandard/ || exit 1
+elif [ -f OpenCorePkg/Include/Apple/IndustryStandard/AppleIntelCpuInfo.h ]; then
+  cp -f OpenCorePkg/Include/Apple/IndustryStandard/AppleIntelCpuInfo.h MdePkg/Include/Apple/IndustryStandard/ || exit 1
+fi
 
 # Create Register/Cpuid.h wrapper for OpenCorePkg compatibility
 mkdir -p MdePkg/Include/Register || exit 1
