@@ -75,6 +75,21 @@ updaterepo() {
 
 abortbuild() {
   echo "Build failed!"
+  if [ "$(unamer)" = "Windows" ]; then
+    echo "=== Post-build ImageTool diagnostics ==="
+    local pkgroot="${PWD}/Build/OpenDuetPkg/DEBUG_VS2022"
+    local efi="${pkgroot}/IA32/OpenCorePkg/Legacy/BootPlatform/8259InterruptControllerDxe/8259/OUTPUT/Legacy8259.efi"
+    local dll="${pkgroot}/IA32/OpenCorePkg/Legacy/BootPlatform/8259InterruptControllerDxe/8259/DEBUG/Legacy8259.dll"
+    local imgtool="${BASE_TOOLS}/Bin/Win32/ImageTool.exe"
+    ls -la "${efi}" "${dll}" 2>&1
+    "${imgtool}" GenImage -c UE -o "${pkgroot}/diag_ue.raw" "${efi}"; echo "UE_RC=$?"
+    "${imgtool}" GenImage -c UE -x -o "${pkgroot}/diag_uex.raw" "${efi}"; echo "UE_XIP_RC=$?"
+    "${imgtool}" GenImage -c PE -x -t DXE_DRIVER -o "${pkgroot}/diag_pe.efi" "${dll}"; echo "PE_XIP_RC=$?"
+    "${imgtool}" GenImage -c PE -t DXE_DRIVER -o "${pkgroot}/diag_pe2.efi" "${dll}"; echo "PE_RC=$?"
+    "${imgtool}" GenImage -c UE -o "${pkgroot}/diag_ue2.raw" "${pkgroot}/diag_pe.efi"; echo "UE_ON_DIAG_PE_RC=$?"
+    python "${ROOTDIR}/Utilities/path_diag.py" --pe "${efi}" --pe "${dll}" --pe "${pkgroot}/diag_pe.efi" 2>&1
+    echo "=== end post-build diagnostics ==="
+  fi
   tail -120 build.log
   exit 1
 }
