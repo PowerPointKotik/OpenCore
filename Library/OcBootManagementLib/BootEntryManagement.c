@@ -2709,11 +2709,11 @@ InternalAddBootEntryFromIAPhysicalMedia (
       BootEntry->IsExternal       = FileSystem->External;
       InsertTailList (&FileSystem->BootEntries, &BootEntry->Link);
       ++BootContext->BootEntryCount;
-  RootDir->Close (RootDir);
+      RootDir->Close (RootDir);
       return EFI_SUCCESS;
     }
   }
 
-   RootDir->Close (RootDir);
+  RootDir->Close (RootDir);
   return EFI_NOT_FOUND;
 }
