@@ -673,8 +673,9 @@ if [ -s "$ps_env_file" ]; then
                 # Prepend MSVC paths to ensure they take precedence over other tools
                 export PATH="${val}:${PATH}"
               elif [ "$var" = "CL" ]; then
-                # CL contains compiler flags - set them
-                export CL="${val}"
+                # CL from PowerShell may contain paths with spaces (breaks MSVC).
+                # Discard it and use our own clean flags below.
+                true
               else
                 printf -v "$var" '%s' "$val"
                 # shellcheck disable=SC2163
