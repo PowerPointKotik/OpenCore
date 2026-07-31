@@ -697,12 +697,6 @@ EFI_STATUS DbtInitContext (OUT DBT_CONTEXT **Context, IN UINTN CodeSize) {
   Ctx = (DBT_CONTEXT *)(UINTN)Addr;
   ZeroMem(Ctx, TotalSize);
 
-  Status = VmAllocateMemoryPool(&Ctx->VmContext, OC_DEFAULT_VMEM_PAGE_COUNT, NULL);
-  if (EFI_ERROR(Status)) {
-    gBS->FreePages(Addr, EFI_SIZE_TO_PAGES(TotalSize));
-    return Status;
-  }
-
   Ctx->CodeCapacity  = CodeSize;
   Ctx->TranslatedCode = (VOID *)((UINTN)Ctx + sizeof(DBT_CONTEXT));
   *Context = Ctx;
