@@ -29,18 +29,6 @@ jobs:
           submodules: 'recursive'
           fetch-depth: 0
 
-      - name: Select Xcode / Command Line Tools
-        run: |
-          # Override runner's broken DEVELOPER_DIR
-          if [ -d /Applications/Xcode.app ]; then
-            echo "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer" >> "$GITHUB_ENV"
-          elif [ -d /Library/Developer/CommandLineTools ]; then
-            echo "DEVELOPER_DIR=/Library/Developer/CommandLineTools" >> "$GITHUB_ENV"
-          else
-            unset DEVELOPER_DIR
-          fi
-          echo "Using DEVELOPER_DIR=${DEVELOPER_DIR:-system default}"
-
       - name: Init git submodules (safety)
         run: |
          git submodule sync --recursive || true
@@ -81,13 +69,23 @@ jobs:
         run: brew install mingw-w64
 
       - name: CI Bootstrap
+        env:
+          DEVELOPER_DIR: ''
         run: |
-         export DEVELOPER_DIR=$(xcode-select -p) 2>/dev/null || true
-         echo "Using DEVELOPER_DIR=$DEVELOPER_DIR"
-         src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
+          # Use xcode-select to find a working Xcode/CLT
+          if xcode-select -p &>/dev/null && [ -d "$(xcode-select -p)" ]; then
+            echo "Using xcode-select path: $(xcode-select -p)"
+          else
+            echo "No Xcode path available"
+          fi
+          src=$(/usr/bin/curl -LfsS https://raw.githubusercontent.com/acidanthera/ocbuild/master/ci-bootstrap.sh) && eval "$src" || exit 1
 
       - run: ./build_duet.tool
+        env:
+          DEVELOPER_DIR: ''
       - run: ./build_oc.tool
+        env:
+          DEVELOPER_DIR: ''
 
       - name: Upload to Artifacts
         uses: actions/upload-artifact@v6
