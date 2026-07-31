@@ -1645,20 +1645,21 @@ OcGetDbtBootEntries (
     NewEntries[0].UnmanagedBootAction             = DbtBootEntryAction;
     NewEntries[0].UnmanagedBootGetFinalDevicePath = NULL;
     //
-    // Provide a file path device path so the picker can render the entry.
-    // A bare end node crashes the picker's icon matcher.
+    // Provide file path device path + end node for the picker.
     //
     {
-      FILEPATH_DEVICE_PATH  *Fp;
-      UINTN                 FpSize = SIZE_OF_FILEPATH_DEVICE_PATH + sizeof (CHAR16);
-      Fp = AllocateZeroPool (FpSize);
-      if (Fp != NULL) {
+      EFI_DEVICE_PATH_PROTOCOL  *Dp;
+      UINTN                     Size = SIZE_OF_FILEPATH_DEVICE_PATH + sizeof (CHAR16) + sizeof (EFI_DEVICE_PATH_PROTOCOL);
+      Dp = AllocateZeroPool (Size);
+      if (Dp != NULL) {
+        FILEPATH_DEVICE_PATH  *Fp = (FILEPATH_DEVICE_PATH *)Dp;
         Fp->Header.Type    = MEDIA_DEVICE_PATH;
         Fp->Header.SubType = MEDIA_FILEPATH_DP;
-        SetDevicePathNodeLength (&Fp->Header, (UINT16)FpSize);
+        SetDevicePathNodeLength (&Fp->Header, SIZE_OF_FILEPATH_DEVICE_PATH + sizeof (CHAR16));
         Fp->PathName[0]    = L'\0';
+        SetDevicePathEndNode ((EFI_DEVICE_PATH_PROTOCOL *)((UINT8 *)Dp + SIZE_OF_FILEPATH_DEVICE_PATH + sizeof (CHAR16)));
       }
-      NewEntries[0].UnmanagedDevicePath = (EFI_DEVICE_PATH_PROTOCOL *)Fp;
+      NewEntries[0].UnmanagedDevicePath = Dp;
     }
 
     *Entries    = NewEntries;
