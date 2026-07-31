@@ -315,17 +315,19 @@ jobs:
       - name: Build Duet
         shell: bash
         run: |
-          # Fix Windows PATH: remove MSYS2/Git Bash tools that shadow MSVC
-          export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '/usr/bin' | grep -v '/mingw64/bin' | tr '\n' ':')
-          export PATH="/c/ProgramData/chocolatey/bin:$PATH"
-          ./build_duet.tool
+           # Fix Windows PATH: remove MSYS2/Git Bash tools that shadow MSVC
+           export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '/usr/bin' | grep -v '/mingw64/bin' | tr '\n' ':')
+           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
+           export CL=""
+           ./build_duet.tool
 
       - name: Build OpenCore
         shell: bash
         run: |
           export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '/usr/bin' | grep -v '/mingw64/bin' | tr '\n' ':')
-          export PATH="/c/ProgramData/chocolatey/bin:$PATH"
-          ./build_oc.tool
+           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
+           export CL=""
+           ./build_oc.tool
 
       - name: Upload to Artifacts
         uses: actions/upload-artifact@v6
