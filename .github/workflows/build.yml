@@ -317,6 +317,7 @@ jobs:
         shell: bash
         env:
           CL: ""
+          MSYS2_ENV_CONV_EXCL: "CL;_CL_"
         run: |
            # Fix Windows PATH: remove MSYS2/Git Bash tools that shadow MSVC
            export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '/usr/bin' | grep -v '/mingw64/bin' | tr '\n' ':')
@@ -327,6 +328,7 @@ jobs:
         shell: bash
         env:
           CL: ""
+          MSYS2_ENV_CONV_EXCL: "CL;_CL_"
         run: |
           export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '/usr/bin' | grep -v '/mingw64/bin' | tr '\n' ':')
           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
