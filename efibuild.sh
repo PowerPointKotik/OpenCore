@@ -568,7 +568,7 @@ CPUIDEOF
 
 # dstatstrussia/audk fork is missing EFI_AP_PROCEDURE types.
 # Inject into both UefiSpec.h (duet) and PiMultiPhase.h (OpenCore firmware).
-# Only inject if the type doesn't already exist (might be present in newer audk).
+# Skip if types already exist (may be present in newer audk revisions).
 if ! grep -q 'EFI_AP_PROCEDURE' MdePkg/Include/Uefi/UefiSpec.h 2>/dev/null; then
 for f in MdePkg/Include/Uefi/UefiSpec.h MdePkg/Include/Pi/PiMultiPhase.h; do
   if [ -f "$f" ]; then
@@ -602,6 +602,8 @@ typedef EFI_STATUS (EFIAPI *EFI_MP_SERVICES_STARTUP_THIS_AP)(\\
   fi
 done
 fi
+
+if [ "$(unamer)" = "Windows" ]; then
    # Configure Visual Studio environment. Requires:
    # 1. choco install vswhere microsoft-build-tools visualcpp-build-tools nasm zip
    # 2. iasl in PATH for MdeModulePkg
@@ -674,8 +676,7 @@ if [ -s "$ps_env_file" ]; then
                 # Prepend MSVC paths to ensure they take precedence over other tools
                 export PATH="${val}:${PATH}"
               elif [ "$var" = "CL" ]; then
-                # CL from PowerShell may contain paths with spaces (breaks MSVC).
-                # Discard it and use our own clean flags below.
+                # CL from PowerShell may contain paths with spaces (breaks MSVC)
                 true
               else
                 printf -v "$var" '%s' "$val"
@@ -793,8 +794,6 @@ if [ "$(type -t package)" = "function" ]; then
           fi
         fi
       done
-done
-fi
-
-if [ "$(unamer)" = "Windows" ]; then
+    done
+  fi
 fi
