@@ -660,13 +660,6 @@ if [ -s "$ps_env_file" ]; then
           vsMSVCpath="${VS2022_PREFIX//\//}"
           vsMSVCbin=$(echo "$vsMSVCpath" | sed 's|C:|/c|' | sed 's|/VC/Tools/MSVC/[0-9]*\.[0-9]*[^/]*/|/bin/Hostx64/x64/|' )
           export PATH="/c/Program Files (x86)/Windows Kits/10/bin/x86:${vsMSVCbin}:${PATH}"
-          # Also construct INCLUDE and LIB for stdint.h and other headers
-          vsMSVCinc="/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/${VS2022_DIR}/include"
-          winSdkUCRT="C:\\Program Files (x86)\\Windows Kits\\10\\Include\\${WINSDK_VERSION}\\ucrt"
-          winSdkLib="C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\${WINSDK_VERSION}\\um\\x64"
-          winSdkUCRTLib="C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\${WINSDK_VERSION}\\ucrt\\x64"
-          export INCLUDE="${vsMSVCinc};${winSdkUCRT}"
-          export LIB="${winSdkLib};${winSdkUCRTLib}"
           # CL prepends to command line - add /WX- to disable warnings as errors and C4311/C4312/C4267/C4244
           if [ -z "${CL}" ]; then
             export CL="/WX- /wd4311 /wd4312 /wd4267 /wd4244"
