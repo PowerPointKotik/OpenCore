@@ -26,10 +26,6 @@
 
 [Sources]
   OpenDbvX64Dxe.c
-  ../../Library/OcCompressionLib/zlib/inflate.c
-  ../../Library/OcCompressionLib/zlib/inffast.c
-  ../../Library/OcCompressionLib/zlib/inftrees.c
-  ../../Library/OcCompressionLib/zlib/zutil.c
   ../../Library/OcCompressionLib/zlib/adler32.c
 
 [Packages]
