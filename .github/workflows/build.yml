@@ -233,9 +233,10 @@ jobs:
   build-windows:
     name: Windows VS2022
     runs-on: windows-latest
-    env:
-      HAS_OPENSSL_BUILD: 0
-      CC: gcc
+     env:
+       HAS_OPENSSL_BUILD: 0
+       CC: gcc
+       CL: ""
     steps:
       - uses: actions/checkout@v6
         with:
@@ -318,15 +319,13 @@ jobs:
            # Fix Windows PATH: remove MSYS2/Git Bash tools that shadow MSVC
            export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '/usr/bin' | grep -v '/mingw64/bin' | tr '\n' ':')
            export PATH="/c/ProgramData/chocolatey/bin:$PATH"
-           export CL=""
            ./build_duet.tool
 
       - name: Build OpenCore
         shell: bash
         run: |
           export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '/usr/bin' | grep -v '/mingw64/bin' | tr '\n' ':')
-           export PATH="/c/ProgramData/chocolatey/bin:$PATH"
-           export CL=""
+          export PATH="/c/ProgramData/chocolatey/bin:$PATH"
            ./build_oc.tool
 
       - name: Upload to Artifacts
