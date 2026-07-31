@@ -711,8 +711,7 @@ if [ "$(unamer)" = "Windows" ]; then
    export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:${PATH}"
    echo "=== Path diagnostics ==="
    ls "${BASE_TOOLS}/Bin/Win32/GenSec.exe" 2>/dev/null && echo "GenSec.exe present in Bin/Win32" || echo "GenSec.exe MISSING in Bin/Win32"
-   cmd //d //c "where GenSec 2>&1 & where ImageTool 2>&1" | tr -d '\r'
-   python -c "import os; p=os.environ.get('PATH',''); print('PYTHON_SEES_PATH_PREFIX=' + p[:600]); print('PYTHON_SEES_HAS_BIN_WIN32=' + ('UDK' in p and 'Bin\\Win32' in p))"
+   python "${ROOTDIR}/Utilities/path_diag.py"
    echo "=== end diagnostics ==="
 fi
 
