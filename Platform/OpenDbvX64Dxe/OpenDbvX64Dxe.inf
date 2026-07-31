@@ -26,7 +26,6 @@
 
 [Sources]
   OpenDbvX64Dxe.c
-  ../../Library/OcCompressionLib/zlib/adler32.c
 
 [Packages]
   OpenCorePkg/OpenCorePkg.dec
