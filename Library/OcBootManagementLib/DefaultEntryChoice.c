@@ -1641,7 +1641,7 @@ InternalLoadBootEntry (
   //
   if ((EntryData != NULL) && (EntryDataSize >= 2)) {
     UINT16  DosMagic = *(UINT16 *)EntryData;
-    if (DosMagic == 0x5A4D && EntryDataSize >= 0x40) {
+    if ((DosMagic == 0x5A4D) && (EntryDataSize >= 0x40)) {
       UINT32  PeOffset = *(UINT32 *)((UINT8 *)EntryData + 0x3C);
       if ((PeOffset + sizeof (UINT32) + sizeof (UINT16)) < EntryDataSize) {
         UINT32  PeSig   = *(UINT32 *)((UINT8 *)EntryData + PeOffset);
