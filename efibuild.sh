@@ -660,12 +660,9 @@ if [ -s "$ps_env_file" ]; then
           vsMSVCpath="${VS2022_PREFIX//\//}"
           vsMSVCbin=$(echo "$vsMSVCpath" | sed 's|C:|/c|' | sed 's|/VC/Tools/MSVC/[0-9]*\.[0-9]*[^/]*/|/bin/Hostx64/x64/|' )
           export PATH="/c/Program Files (x86)/Windows Kits/10/bin/x86:${vsMSVCbin}:${PATH}"
-          # CL prepends to command line - add /WX- to disable warnings as errors and C4311/C4312/C4267/C4244
-          if [ -z "${CL}" ]; then
-            export CL="/WX- /wd4311 /wd4312 /wd4267 /wd4244"
-          else
-            export CL="${CL} /WX- /wd4311 /wd4312 /wd4267 /wd4244"
-          fi
+          # CL prepends to command line - force clean flags to avoid broken
+          # CL from setup-msvc-dev containing unquoted paths with spaces
+          export CL="/WX- /wd4311 /wd4312 /wd4267 /wd4244"
         fi
       fi
     fi
@@ -695,10 +692,8 @@ if [ "$(unamer)" = "Windows" ]; then
           elif [ -n "$MSVC_BIN" ]; then
             export PATH="${MSVC_BIN}:${PATH}"
           fi
-          # Ensure CL is set to disable warnings-as-errors
-          if [ -z "${CL}" ]; then
-            export CL="/WX- /wd4311 /wd4312 /wd4267 /wd4244"
-          fi
+          # Force clean CL to disable warnings-as-errors and avoid broken paths
+          export CL="/WX- /wd4311 /wd4312 /wd4267 /wd4244"
          nmake        || exit 1
         cd ..        || exit 1
       else
