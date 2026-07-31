@@ -98,12 +98,21 @@ def main():
     print('PYTHON_VERSION=' + sys.version.split()[0])
     print('ENV_BLOCK_SIZE=' + str(env_size))
     print('PATH_LEN=' + str(len(p)))
-print('PATH_FIRST_300=' + p[:300])
-print('PATH_LAST_300=' + p[-300:])
-print('HAS_SYSTEM32=' + str('System32' in p))
-binwin = r'D:\a\OpenCore\OpenCore\UDK\BaseTools\Bin\Win32'
-print('GEN_SEC_EXISTS=' + str(os.path.exists(os.path.join(binwin, 'GenSec.exe'))))
-print('IMAGE_TOOL_EXISTS=' + str(os.path.exists(os.path.join(binwin, 'ImageTool.exe'))))
+    print('PATH_FIRST_300=' + p[:300])
+    print('PATH_LAST_300=' + p[-300:])
+    print('HAS_SYSTEM32=' + str('System32' in p))
+    binwin = r'D:\a\OpenCore\OpenCore\UDK\BaseTools\Bin\Win32'
+    print('GEN_SEC_EXISTS=' + str(os.path.exists(os.path.join(binwin, 'GenSec.exe'))))
+    print('IMAGE_TOOL_EXISTS=' + str(os.path.exists(os.path.join(binwin, 'ImageTool.exe'))))
+    print('--- CMD_ECHO_PATH ---')
+    print(run('echo %PATH%'))
+    print('--- CMD_WHERE_FULL_PATH ---')
+    print(run('where GenSec 2>&1 & echo --- & where where 2>&1'))
+    clean = os.pathsep.join([binwin,
+                             r'D:\a\OpenCore\OpenCore\UDK\BaseTools\BinWrappers\WindowsLike',
+                             r'C:\Windows\System32'])
+    print('--- CMD_WHERE_CLEAN_PATH ---')
+    print(run('where GenSec 2>&1 & echo --- & GenSec 2>&1', env=dict(os.environ, PATH=clean)))
 
 
 def run(cmdline, env=None):
@@ -117,12 +126,5 @@ def run(cmdline, env=None):
         return 'EXC=%r' % (e,)
 
 
-print('--- CMD_ECHO_PATH ---')
-print(run('echo %PATH%'))
-print('--- CMD_WHERE_FULL_PATH ---')
-print(run('where GenSec 2>&1 & echo --- & where where 2>&1'))
-clean = os.pathsep.join([binwin,
-                         r'D:\a\OpenCore\OpenCore\UDK\BaseTools\BinWrappers\WindowsLike',
-                         r'C:\Windows\System32'])
-print('--- CMD_WHERE_CLEAN_PATH ---')
-print(run('where GenSec 2>&1 & echo --- & GenSec 2>&1', env=dict(os.environ, PATH=clean)))
+if __name__ == '__main__':
+    main()
