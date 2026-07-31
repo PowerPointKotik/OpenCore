@@ -928,9 +928,9 @@ SKIP_READ_APPLE_KERNEL:
     //
     Header64 = (MACH_HEADER_64 *)KernelBuffer;
     EntryPoint = 0;
+    Cmd    = (MACH_LOAD_COMMAND *)((UINTN)Header64 + sizeof (MACH_HEADER_64));
 
     for (Index = 0; Index < Header64->NumCommands; ++Index) {
-      Cmd = &Header64->Commands[Index];
       if (Cmd->CommandType == MACH_LOAD_COMMAND_UNIX_THREAD) {
         UINT32   Flavor;
         UINT32   Count;
@@ -956,6 +956,7 @@ SKIP_READ_APPLE_KERNEL:
         }
         break;
       }
+      Cmd = (MACH_LOAD_COMMAND *)((UINTN)Cmd + Cmd->CommandSize);
     }
 
     if (EntryPoint == 0) {
