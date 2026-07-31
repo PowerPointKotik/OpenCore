@@ -705,10 +705,25 @@ if [ "$(unamer)" = "Windows" ]; then
 fi
 
 if [ "$(unamer)" = "Windows" ]; then
-   # Re-assert BaseTools bin dirs at the FRONT of PATH so that nmake/cmd recipes
-   # can find GenSec/GenFfs/GenFv/etc. Earlier prepends at line ~621 get buried
-   # past cmd's PATH window by the VS env and MSVC prepends that follow.
-   export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:${PATH}"
+   # Normalize the PATH to pure POSIX form so that MSYS2 converts it into a
+   # clean Windows PATH for native tools (nmake/cmd recipes). A mixed-format
+   # PATH gets mangled by MSYS2's converter and cmd then fails to resolve any
+   # external command (e.g. 'GenSec' is not recognized).
+   normalized_path=""
+   IFS=':' read -r -a path_entries <<< "${PATH}"
+   for entry in "${path_entries[@]}" ; do
+     [ -z "${entry}" ] && continue
+     norm="$(cygpath -u "${entry}" 2>/dev/null)"
+     if [ -z "${norm}" ] ; then
+       norm="${entry}"
+     fi
+     if [ -z "${normalized_path}" ] ; then
+       normalized_path="${norm}"
+     else
+       normalized_path="${normalized_path}:${norm}"
+     fi
+   done
+   export PATH="${BASE_TOOLS}/Bin/Win32:${BASE_TOOLS}/BinWrappers/WindowsLike:${normalized_path}"
    echo "=== Path diagnostics ==="
    ls "${BASE_TOOLS}/Bin/Win32/GenSec.exe" 2>/dev/null && echo "GenSec.exe present in Bin/Win32" || echo "GenSec.exe MISSING in Bin/Win32"
    python "${ROOTDIR}/Utilities/path_diag.py"
