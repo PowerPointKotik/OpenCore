@@ -637,6 +637,8 @@ DirectLoadKernel (
   Device     = DbtGetInstallerDevice (gDbtContext);
   KernelPath = DbtGetKernelPath (gDbtContext);
 
+  DEBUG ((DEBUG_INFO, "DirectKernel: device=%p path=%s\n",
+          Device, KernelPath != NULL ? KernelPath : L"<null>"));
   if (Device == NULL || KernelPath == NULL) {
     DEBUG ((DEBUG_ERROR, "DirectKernel: No boot info set\n"));
     return EFI_NOT_STARTED;
@@ -985,8 +987,14 @@ SKIP_READ_APPLE_KERNEL:
             Count  = Triple[1];
             DEBUG ((DEBUG_INFO, "DirectKernel: LC_UNIXTHREAD flavor=%u count=%u\n", Flavor, Count));
             if (Flavor == ARM64_THREAD_STATE_FLAVOR && Count >= 66) {
-              if ((UINTN)Triple + 8 + 33 * sizeof (UINT64) <= (UINTN)KernelBuffer + KernelSize) {
-                EntryPoint = *((UINT64 *)((UINTN)Triple + 8 + 32 * sizeof (UINT64)));
+              if ((UINTN)Triple + 8 + 34 * sizeof (UINT64) <= (UINTN)KernelBuffer + KernelSize) {
+                UINT64  *ThrState = (UINT64 *)((UINTN)Triple + 8);
+
+                EntryPoint = ThrState[32];
+                DEBUG ((DEBUG_INFO, "DirectKernel: thr x0=0x%llx x1=0x%llx sp=0x%llx\n",
+                        ThrState[0], ThrState[1], ThrState[31]));
+                DEBUG ((DEBUG_INFO, "DirectKernel: thr pc=0x%llx cpsr=0x%llx\n",
+                        ThrState[32], ThrState[33]));
               }
               break;
             }
@@ -1004,7 +1012,11 @@ SKIP_READ_APPLE_KERNEL:
           SegVmAddr[SegCount]  = Seg64->VirtualAddress;
           SegVmSize[SegCount]  = Seg64->Size;
           SegFileOff[SegCount] = Seg64->FileOffset;
+          DEBUG ((DEBUG_INFO, "DirectKernel: seg[%u] va=0x%llx sz=0x%llx off=0x%llx\n",
+                  SegCount, Seg64->VirtualAddress, Seg64->Size, Seg64->FileOffset));
           SegCount++;
+        } else {
+          DEBUG ((DEBUG_WARN, "DirectKernel: segment table full (%u), ignoring\n", SegCount));
         }
       } else if (Cmd->CommandType == 0x80000028U) {  // LC_MAIN
         //
@@ -1046,6 +1058,9 @@ SKIP_READ_APPLE_KERNEL:
   BootArgs->kaddr = (UINT64)(UINTN)KernelBuffer;
   BootArgs->ksize  = KernelSize;
 
+  DEBUG ((DEBUG_INFO, "DirectKernel: bootargs kaddr=0x%llx ksize=%u\n",
+          BootArgs->kaddr, BootArgs->ksize));
+
   //
   // Create minimal device tree for XNU
   //
@@ -1057,6 +1072,8 @@ SKIP_READ_APPLE_KERNEL:
   } else {
     BootArgs->deviceTreeP = (UINT64)(UINTN)DeviceTreeBuffer;
     BootArgs->deviceTreeLength = (UINT32)DeviceTreeSize;
+    DEBUG ((DEBUG_INFO, "DirectKernel: devicetree=0x%llx/%u\n",
+            BootArgs->deviceTreeP, BootArgs->deviceTreeLength));
   }
 
   //
@@ -1073,6 +1090,7 @@ SKIP_READ_APPLE_KERNEL:
     FreePool (KernelBuffer);
     return EFI_OUT_OF_RESOURCES;
   }
+  DEBUG ((DEBUG_INFO, "DirectKernel: stack=%p size=%u\n", StackBuffer, StackSize));
 
   //
   // For ARM64 kernel, use DBT translation
@@ -1129,6 +1147,9 @@ SKIP_READ_APPLE_KERNEL:
       return EFI_INVALID_PARAMETER;
     }
 
+    DEBUG ((DEBUG_INFO, "DirectKernel: dispatch start pc=0x%llx maxsteps=%u\n",
+            ArmContext.PC, MaxSteps));
+
     for (Steps = 0;
          Steps < MaxSteps &&
          ArmContext.PC >= KernelVaBase &&
@@ -1183,9 +1204,6 @@ SKIP_READ_APPLE_KERNEL:
       }
 
       DbtTranslateBlock (gDbtContext, (VOID *)(Pa), Off + 4, ArmContext.PC, NULL);
-      if (DbtBlockCached (gDbtContext, ArmContext.PC)) {
-        DEBUG ((DEBUG_INFO, "DBT: [cached] PC=0x%llx — no re-translation\n", ArmContext.PC));
-      }
       DbtExecute (gDbtContext, &ArmContext);
     }
 
@@ -1234,7 +1252,9 @@ DbtBootEntryAction (
   IN      EFI_DEVICE_PATH_PROTOCOL  *DevicePath
   )
 {
-  DEBUG ((DEBUG_INFO, "DBT: DbtBootEntryAction called — starting DirectKernel\n"));
+  DEBUG ((DEBUG_INFO, "DBT: BootEntryAction picker=%p dp=%p\n",
+          PickerContext, DevicePath));
+  DEBUG ((DEBUG_INFO, "DBT: starting DirectKernel\n"));
   //
   // Fallback: scan all filesystems for kernel if no boot info yet
   //
@@ -1889,6 +1909,8 @@ OpenDbvX64EntryPoint (
 {
   EFI_STATUS  Status;
 
+  DEBUG ((DEBUG_INFO, "DBT: entry image=%p st=%p\n", ImageHandle, SystemTable));
+
   Status = DbtInitContext (&gDbtContext, 0x100000);
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "DBT: Failed to initialize DBT context - %r\n", Status));
@@ -1911,7 +1933,7 @@ OpenDbvX64EntryPoint (
     if (EFI_ERROR (Status)) {
       DEBUG ((DEBUG_ERROR, "DBT: Failed to install fallback protocol - %r\n", Status));
     } else {
-      DEBUG ((DEBUG_INFO, "DBT: Fallback protocol installed\n"));
+      DEBUG ((DEBUG_INFO, "DBT: fallback protocol installed\n"));
     }
   }
 
@@ -1930,6 +1952,8 @@ OpenDbvX64EntryPoint (
     gDbtContext = NULL;
     return Status;
   }
+  DEBUG ((DEBUG_INFO, "DBT: boot entry protocol installed\n"));
+  DEBUG ((DEBUG_INFO, "DBT: driver ready\n"));
 
   return EFI_SUCCESS;
 }

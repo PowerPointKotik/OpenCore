@@ -58,6 +58,29 @@ STATIC UINT32       gDbtTraceSize = 0;  // access size 0=B 1=H 2=W 3=X
 STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|crm<<4|op2)
 
 //
+// Runtime trace gate.  DbtExecute sets it per invocation: TRUE only when the
+// block about to run is being executed for the first time (its guest PC is
+// not yet in the translation cache).  Loop iterations therefore stay silent
+// instead of flooding the 256 KB OpenCore log with register dumps — the
+// observed boot failure mode.  DbtTraceBlock/MemLd/MemSt/Sys bail out when
+// the gate is down; the kernel-console (UART) capture in DbtTraceMemSt is
+// exempt because printk output must never be dropped.
+//
+STATIC BOOLEAN      gDbtTraceEnabled = FALSE;
+
+//
+// Spin detector: when the guest PC repeats across DbtExecute calls (a
+// busy loop, e.g. a secondary-CPU spin or a stuck CBZ), log one short
+// liveness line every 4096 iterations instead of one per iteration.
+// A 3-entry ring of recently seen PCs catches both self-loops and short
+// alternating loops (A->B->A->B, A->B->C->A); anything longer than three
+// distinct PCs cycles out of the ring and gets re-logged — harmless.
+//
+STATIC UINT64       gDbtLastPc[3] = { 0, 0, 0 };
+STATIC UINTN        gDbtLastIdx   = 0;
+STATIC UINTN        gDbtSpinIters = 0;
+
+//
 // Host-side VA->host-address helper invoked by the translated LDR/STR
 // code (forward declaration; defined in the MMU helpers section), and the
 // runtime trace helpers invoked by the translated code when DBT_VERBOSE
@@ -1909,7 +1932,6 @@ STATIC UINTN DbtTranslateOne (
       //
       // MRS has bit 21 set (11010101011), MSR has it clear (11010101000).
       BOOLEAN IsMsr = !((Inst >> 21) & 1);
-      UINT32  SysReg = ((Inst >> 5) & 0xFFFF) | (((Inst >> 19) & 0x3) << 14);
 
       // Extract op0/op1/CRn/CRm/op2
       UINT32  Op0   = (Inst >> 19) & 0x3;
@@ -1919,9 +1941,12 @@ STATIC UINTN DbtTranslateOne (
       UINT32  Op2   = (Inst >> 5)  & 0x7;
       UINT32  Key   = (Op0 << 16) | (Op1 << 12) | (CRn << 8) | (CRm << 4) | Op2;
 
-      DBG((DEBUG_INFO, "DBT_ASM:    %s sysreg=0x%x (o0=%d o1=%d cn=%d cm=%d o2=%d key=0x%x)\n",
-           IsMsr ? "MSR" : "MRS", SysReg, Op0, Op1, CRn, CRm, Op2, Key));
-
+      //
+      // Known sysregs are named below (DBT_SYS/DBT_MMU/DBT_EXC/DBT_SIMD);
+      // unknown ones get a DBT_SYS line with the full o0/o1/crn/crm/o2
+      // decode.  No generic mnemonic line here — it duplicated the decode
+      // and its long line mangled in the firmware log capture.
+      //
       if (IsMsr) {
         //
         // MSR: write system register from Xt
@@ -2253,6 +2278,11 @@ EFI_STATUS DbtInitContext (OUT DBT_CONTEXT **Context, IN UINTN CodeSize) {
   Ctx->TranslatedCode = (VOID *)((UINTN)Ctx + sizeof(DBT_CONTEXT));
   *Context = Ctx;
 
+  DBG((DEBUG_INFO, "DBT: ctx=%p size=%u pages=%u\n",
+       Ctx, CodeSize, EFI_SIZE_TO_PAGES (TotalSize)));
+  DBG((DEBUG_INFO, "DBT: code=%p cap=0x%x type=BS-code\n",
+       Ctx->TranslatedCode, CodeSize));
+
   //
   // Init ARM64 system state for identity-mapped boot
   //
@@ -2269,9 +2299,11 @@ EFI_STATUS DbtInitContext (OUT DBT_CONTEXT **Context, IN UINTN CodeSize) {
   Ctx->ArmState.MIDR_EL1  = 0x611F0240;
   Ctx->ArmState.MPIDR_EL1 = 0x80000000;    // single CPU
 
-  DBG((DEBUG_INFO, "DBT: Init OK size=0x%x buf=%p ctx=%p MMU=%s SCTLR=0x%llx\n",
-       CodeSize, Ctx->TranslatedCode, Ctx,
-       (Ctx->ArmState.SCTLR_EL1 & 1) ? "ON" : "OFF", Ctx->ArmState.SCTLR_EL1));
+  DBG((DEBUG_INFO, "DBT: sctlr=0x%llx tcr=0x%llx mair=0x%llx\n",
+       Ctx->ArmState.SCTLR_EL1, Ctx->ArmState.TCR_EL1, Ctx->ArmState.MAIR_EL1));
+  DBG((DEBUG_INFO, "DBT: midr=0x%llx mpidr=0x%llx cntfrq=%llu\n",
+       Ctx->ArmState.MIDR_EL1, Ctx->ArmState.MPIDR_EL1, Ctx->ArmState.CNTFRQ_EL0));
+  DBG((DEBUG_INFO, "DBT: init done\n"));
   return EFI_SUCCESS;
 }
 
@@ -2297,38 +2329,75 @@ CONST CHAR16 * DbtGetKernelPath (DBT_CONTEXT *Ctx) {
 VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
   if (!Ctx || !ArmState || !Ctx->TranslatedCode) return;
 
-  DBG((DEBUG_INFO, "DBT: Execute entry=0x%llx SP=0x%llx code=%p size=%u\n",
-           ArmState->PC, ArmState->SP, Ctx->TranslatedCode, Ctx->TranslatedSize));
+  //
+  // Trace gate: full detail (register dumps, memory/sysreg trace) only for
+  // the first execution of each block.  Loop iterations are silent apart
+  // from a spin-liveness line every 4096 repeats.
+  //
+  {
+    BOOLEAN Fresh = !DbtBlockCached (Ctx, ArmState->PC);
+    BOOLEAN Known = FALSE;
+    UINTN   I;
+
+    gDbtTraceEnabled = Fresh;
+    for (I = 0; I < 3; I++) {
+      if (gDbtLastPc[I] == ArmState->PC) {
+        Known = TRUE;
+        break;
+      }
+    }
+    if (Known) {
+      gDbtSpinIters++;
+      if ((gDbtSpinIters & 0xFFF) == 0) {
+        DBG((DEBUG_INFO, "DBT: spin pc=0x%llx iters=%u\n", ArmState->PC, gDbtSpinIters));
+      }
+    } else {
+      gDbtLastPc[gDbtLastIdx] = ArmState->PC;
+      gDbtLastIdx = (gDbtLastIdx + 1) % 3;
+      gDbtSpinIters = 0;
+      if (DBT_VERBOSE) {
+        DBG((DEBUG_INFO, "DBT: pc=0x%llx sp=0x%llx x0=0x%llx\n",
+             ArmState->PC, ArmState->SP, ArmState->X[0]));
+      }
+    }
+  }
 
   {
     //
-    // DIAGNOSTIC: print the EFI memory descriptor covering the translated
-    // code buffer so we can see whether the firmware marks it executable.
+    // DIAGNOSTIC (once): print the EFI memory descriptor covering the
+    // translated code buffer so we can see whether the firmware marks it
+    // executable.  The full memory map walk is far too expensive (and
+    // chatty) to repeat on every block execution.
     //
-    EFI_MEMORY_DESCRIPTOR *Map    = NULL;
-    UINTN                 MapSize = 0, MapKey, DescSize;
-    UINT32                DescVer;
-    EFI_STATUS            MStatus = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVer);
+    STATIC BOOLEAN MemMapLogged = FALSE;
 
-    if (MStatus == EFI_BUFFER_TOO_SMALL) {
-      Map = AllocatePool (MapSize + DescSize);
-      if (Map) {
-        MStatus = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVer);
-        if (!EFI_ERROR (MStatus)) {
-          for (UINTN I = 0; I < MapSize / DescSize; I++) {
-            EFI_MEMORY_DESCRIPTOR *D = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)Map + I * DescSize);
-            UINTN Start = D->PhysicalStart;
-            UINTN End   = Start + (D->NumberOfPages << 12);
-            if ((UINTN)Ctx->TranslatedCode >= Start && (UINTN)Ctx->TranslatedCode < End) {
-              DBG((DEBUG_INFO, "DBT: code buffer type=0x%x attrs=0x%llx%s\n",
-                   D->Type, (UINT64)D->Attribute,
-                   (D->Attribute & EFI_MEMORY_XP) ? " XP-SET" : " executable"));
-              break;
+    if (!MemMapLogged) {
+      EFI_MEMORY_DESCRIPTOR *Map    = NULL;
+      UINTN                 MapSize = 0, MapKey, DescSize;
+      UINT32                DescVer;
+      EFI_STATUS            MStatus = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVer);
+
+      if (MStatus == EFI_BUFFER_TOO_SMALL) {
+        Map = AllocatePool (MapSize + DescSize);
+        if (Map) {
+          MStatus = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVer);
+          if (!EFI_ERROR (MStatus)) {
+            for (UINTN I = 0; I < MapSize / DescSize; I++) {
+              EFI_MEMORY_DESCRIPTOR *D = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)Map + I * DescSize);
+              UINTN Start = D->PhysicalStart;
+              UINTN End   = Start + (D->NumberOfPages << 12);
+              if ((UINTN)Ctx->TranslatedCode >= Start && (UINTN)Ctx->TranslatedCode < End) {
+                DBG((DEBUG_INFO, "DBT: code buffer type=0x%x attrs=0x%llx%s\n",
+                     D->Type, (UINT64)D->Attribute,
+                     (D->Attribute & EFI_MEMORY_XP) ? " XP-SET" : " executable"));
+                break;
+              }
             }
           }
+          FreePool (Map);
         }
-        FreePool (Map);
       }
+      MemMapLogged = TRUE;
     }
   }
 
@@ -2366,9 +2435,6 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
   // Copy state back
   CopyMem(ArmState, &Ctx->ArmState, sizeof(DBT_ARM64_STATE));
   DbtDumpState ("EXIT", ArmState);
-
-  DBG((DEBUG_INFO, "DBT: Execute done — PC=0x%llx X0=0x%llx PSTATE=0x%llx SP_EL0=0x%llx\n",
-       ArmState->PC, ArmState->X[0], ArmState->PSTATE, ArmState->SP_EL0));
 }
 
 EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, UINT64 BaseAddr, VOID *X86Code) {
@@ -2386,7 +2452,9 @@ EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, U
         INTN Rel = (INTN)((UINT8 *)Ctx->TranslatedCode + CachedOff - (Ctx->JumpSlot + 5));
         *(INT32 *)(Ctx->JumpSlot + 1) = (INT32)Rel;
       }
-      DBG((DEBUG_INFO, "DBT: Block 0x%llx cached — skip translation\n", BaseAddr));
+      // Cache hit — nothing to emit.  Silent here: DbtExecute reports each
+      // distinct PC (and spin loops via the 4096-iteration liveness line),
+      // so per-call logging would only flood the log in alternating loops.
       return EFI_SUCCESS;
     }
   }
@@ -2528,6 +2596,10 @@ EFI_STATUS DbtSetSegments (DBT_CONTEXT *Ctx, UINTN SegCount, UINT64 *SegVmAddr,
 
   DBG((DEBUG_INFO, "DBT_MMU: registered %u segments, kernel buffer 0x%llx\n",
        SegCount, (UINT64)(UINTN)KernelBuffer));
+  for (UINTN I = 0; I < SegCount; I++) {
+    DBG((DEBUG_INFO, "DBT_MMU: seg[%u] va=0x%llx sz=0x%llx off=0x%llx\n",
+         I, SegVmAddr[I], SegVmSize[I], SegFileOff[I]));
+  }
   return EFI_SUCCESS;
 }
 
@@ -2560,38 +2632,42 @@ STATIC BOOLEAN DbtVaInImage (UINT64 Va) {
   return FALSE;
 }
 
+//
+// Full register dump.  Called from the host side only, and only when
+// gDbtTraceEnabled is up (first execution of a block), so the log volume
+// stays bounded.  Lines are kept short — the firmware log capture drops
+// bytes on long lines (observed: 100+ byte DBT lines come back mangled),
+// so four registers per line, ~60 chars each.
+//
 STATIC VOID DbtDumpState (IN CONST CHAR8 *Tag, IN DBT_ARM64_STATE *S) {
-  if (!DBT_VERBOSE || S == NULL) return;
+  if (!gDbtTraceEnabled || S == NULL) return;
 
-  DBG((DEBUG_INFO, "DBT_REG: %s pc=0x%llx sp=0x%llx pst=0x%llx"
-       " x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx\n",
-       Tag, S->PC, S->SP, S->PSTATE,
-       S->X[0], S->X[1], S->X[2], S->X[3]));
-  DBG((DEBUG_INFO, "DBT_REG: %s x4=0x%llx x5=0x%llx x6=0x%llx x7=0x%llx"
-       " x8=0x%llx x9=0x%llx x10=0x%llx x11=0x%llx\n",
-       Tag,
-       S->X[4], S->X[5], S->X[6], S->X[7],
-       S->X[8], S->X[9], S->X[10], S->X[11]));
-  DBG((DEBUG_INFO, "DBT_REG: %s x12=0x%llx x13=0x%llx x14=0x%llx x15=0x%llx"
-       " x16=0x%llx x17=0x%llx x18=0x%llx x19=0x%llx\n",
-       Tag,
-       S->X[12], S->X[13], S->X[14], S->X[15],
-       S->X[16], S->X[17], S->X[18], S->X[19]));
-  DBG((DEBUG_INFO, "DBT_REG: %s x20=0x%llx x21=0x%llx x22=0x%llx x23=0x%llx"
-       " x24=0x%llx x25=0x%llx x26=0x%llx x27=0x%llx\n",
-       Tag,
-       S->X[20], S->X[21], S->X[22], S->X[23],
-       S->X[24], S->X[25], S->X[26], S->X[27]));
-  DBG((DEBUG_INFO, "DBT_REG: %s x28=0x%llx fp=0x%llx lr=0x%llx"
-       " sctlr=0x%llx ttbr0=0x%llx ttbr1=0x%llx tcr=0x%llx mair=0x%llx\n",
-       Tag,
-       S->X[28], S->X[29], S->X[30],
-       S->SCTLR_EL1, S->TTBR0_EL1, S->TTBR1_EL1, S->TCR_EL1, S->MAIR_EL1));
+  DBG((DEBUG_INFO, "DBT_REG: %s pc=0x%llx sp=0x%llx pst=0x%llx\n",
+       Tag, S->PC, S->SP, S->PSTATE));
+  DBG((DEBUG_INFO, "DBT_REG: %s x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx\n",
+       Tag, S->X[0], S->X[1], S->X[2], S->X[3]));
+  DBG((DEBUG_INFO, "DBT_REG: %s x4=0x%llx x5=0x%llx x6=0x%llx x7=0x%llx\n",
+       Tag, S->X[4], S->X[5], S->X[6], S->X[7]));
+  DBG((DEBUG_INFO, "DBT_REG: %s x8=0x%llx x9=0x%llx x10=0x%llx x11=0x%llx\n",
+       Tag, S->X[8], S->X[9], S->X[10], S->X[11]));
+  DBG((DEBUG_INFO, "DBT_REG: %s x12=0x%llx x13=0x%llx x14=0x%llx x15=0x%llx\n",
+       Tag, S->X[12], S->X[13], S->X[14], S->X[15]));
+  DBG((DEBUG_INFO, "DBT_REG: %s x16=0x%llx x17=0x%llx x18=0x%llx x19=0x%llx\n",
+       Tag, S->X[16], S->X[17], S->X[18], S->X[19]));
+  DBG((DEBUG_INFO, "DBT_REG: %s x20=0x%llx x21=0x%llx x22=0x%llx x23=0x%llx\n",
+       Tag, S->X[20], S->X[21], S->X[22], S->X[23]));
+  DBG((DEBUG_INFO, "DBT_REG: %s x24=0x%llx x25=0x%llx x26=0x%llx x27=0x%llx\n",
+       Tag, S->X[24], S->X[25], S->X[26], S->X[27]));
+  DBG((DEBUG_INFO, "DBT_REG: %s x28=0x%llx fp=0x%llx lr=0x%llx sp0=0x%llx\n",
+       Tag, S->X[28], S->X[29], S->X[30], S->SP_EL0));
+  DBG((DEBUG_INFO, "DBT_REG: %s sctlr=0x%llx ttbr0=0x%llx tcr=0x%llx\n",
+       Tag, S->SCTLR_EL1, S->TTBR0_EL1, S->TCR_EL1));
 }
 
 VOID DbtTraceBlock (VOID) {
-  if (!DBT_VERBOSE) return;
-  DbtDumpState ("BLK", gDbtActiveState);
+  if (!DBT_VERBOSE || !gDbtTraceEnabled || gDbtActiveState == NULL) return;
+  DBG((DEBUG_INFO, "DBT_BLK: pc=0x%llx x0=0x%llx lr=0x%llx\n",
+       gDbtTracePc, gDbtActiveState->X[0], gDbtActiveState->X[30]));
 }
 
 VOID DbtTraceMemSt (VOID) {
@@ -2601,31 +2677,34 @@ VOID DbtTraceMemSt (VOID) {
   Va  = gDbtTraceVa;
   Val = gDbtTraceVal;
 
-  DBG((DEBUG_INFO, "DBT_MEM: ST  size=%u va=0x%llx val=0x%llx%s\n",
-       (1u << gDbtTraceSize) >> 1, Va, Val, DbtVaInImage(Va) ? "" : " MMIO"));
-
   //
   // Kernel console capture: byte-wide stores outside the kernel image are
   // MMIO writes (e.g. UART TX).  Render them as characters so kernel
-  // printk output shows up verbatim in the OpenCore log.
+  // printk output shows up verbatim in the OpenCore log.  Never gated —
+  // the console must not be silenced by the fresh-block trace gate.
   //
   if (gDbtTraceSize == 0 && !DbtVaInImage(Va)) {
     CHAR8 Ch = (CHAR8)(Val & 0xFF);
     DBG((DEBUG_INFO, "DBT_UART: [0x%llx] -> '%c' (0x%02x)%s\n",
          Va, (Ch >= 0x20 && Ch < 0x7F) ? Ch : '.', (UINT8)Ch,
          (Ch >= 0x20 && Ch < 0x7F) ? "" : " non-printable"));
+    return;
   }
+
+  if (!gDbtTraceEnabled) return;
+  DBG((DEBUG_INFO, "DBT_MEM: ST size=%u va=0x%llx val=0x%llx%s\n",
+       (1u << gDbtTraceSize) >> 1, Va, Val, DbtVaInImage(Va) ? "" : " MMIO"));
 }
 
 VOID DbtTraceMemLd (VOID) {
-  if (!DBT_VERBOSE) return;
-  DBG((DEBUG_INFO, "DBT_MEM: LD  size=%u va=0x%llx val=0x%llx%s\n",
+  if (!DBT_VERBOSE || !gDbtTraceEnabled) return;
+  DBG((DEBUG_INFO, "DBT_MEM: LD size=%u va=0x%llx val=0x%llx%s\n",
        (1u << gDbtTraceSize) >> 1, gDbtTraceVa, gDbtTraceVal,
        DbtVaInImage(gDbtTraceVa) ? "" : " MMIO"));
 }
 
 VOID DbtTraceSys (VOID) {
-  if (!DBT_VERBOSE) return;
+  if (!DBT_VERBOSE || !gDbtTraceEnabled) return;
   DBG((DEBUG_INFO, "DBT_SYS: key=0x%llx val=0x%llx\n", gDbtTraceSys, gDbtTraceVal));
 }
 
