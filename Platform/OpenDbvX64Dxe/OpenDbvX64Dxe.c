@@ -621,6 +621,7 @@ DirectLoadKernel (
   UINTN                            DeviceTreeSize;
   UINTN                            Index;
   MACH_LOAD_COMMAND                *Cmd;
+  MACH_LOAD_COMMAND                *CmdEnd;
   MACH_HEADER_64                   *Header64;
   UINT64                           SegVmAddr[32];
   UINT64                           SegVmSize[32];
@@ -954,40 +955,48 @@ SKIP_READ_APPLE_KERNEL:
     Header64 = (MACH_HEADER_64 *)KernelBuffer;
     EntryPoint = 0;
     Cmd    = (MACH_LOAD_COMMAND *)((UINTN)Header64 + sizeof (MACH_HEADER_64));
+    CmdEnd = (MACH_LOAD_COMMAND *)((UINTN)Cmd + Header64->CommandsSize);
 
-    for (Index = 0; Index < Header64->NumCommands; ++Index) {
+    //
+    // Walk all load commands: the LC_UNIXTHREAD entry point sits at the
+    // start of the command list, but the LC_SEGMENT_64 layout needed for
+    // VA->file-offset mapping only appears later in the list, so do not
+    // stop at the thread state.
+    //
+    for (Index = 0; Index < Header64->NumCommands && Cmd < CmdEnd; ++Index) {
       if (Cmd->CommandType == MACH_LOAD_COMMAND_UNIX_THREAD) {
-        UINT32  *Triple;
-        UINT32   Remaining;
-        UINT32   Flavor;
-        UINT32   Count;
+        if (EntryPoint == 0) {
+          UINT32  *Triple;
+          UINT32   Remaining;
+          UINT32   Flavor;
+          UINT32   Count;
 
-        DEBUG ((DEBUG_INFO, "DirectKernel: Found LC_UNIXTHREAD at index %u\n", Index));
-        //
-        // LC_UNIXTHREAD: cmd(4) + cmdsize(4) + repeated triples of
-        // flavor(4) + count(4) + state[count].  arm_thread_state64_t is
-        // x0-x28, fp, lr, sp, pc, cpsr = 34 UINT64s, PC at UINT64 index 32,
-        // so a full state needs 68 UINT32s.
-        //
-        Triple    = (UINT32 *)((UINTN)Cmd + 8);
-        Remaining = Cmd->CommandSize - 8;
-        while (Remaining >= 8) {
-          Flavor = Triple[0];
-          Count  = Triple[1];
-          DEBUG ((DEBUG_INFO, "DirectKernel: LC_UNIXTHREAD flavor=%u count=%u\n", Flavor, Count));
-          if (Flavor == ARM64_THREAD_STATE_FLAVOR && Count >= 66) {
-            if ((UINTN)Triple + 8 + 33 * sizeof (UINT64) <= (UINTN)KernelBuffer + KernelSize) {
-              EntryPoint = *((UINT64 *)((UINTN)Triple + 8 + 32 * sizeof (UINT64)));
+          DEBUG ((DEBUG_INFO, "DirectKernel: Found LC_UNIXTHREAD at index %u\n", Index));
+          //
+          // LC_UNIXTHREAD: cmd(4) + cmdsize(4) + repeated triples of
+          // flavor(4) + count(4) + state[count].  arm_thread_state64_t is
+          // x0-x28, fp, lr, sp, pc, cpsr = 34 UINT64s, PC at UINT64 index 32,
+          // so a full state needs 68 UINT32s.
+          //
+          Triple    = (UINT32 *)((UINTN)Cmd + 8);
+          Remaining = (Cmd->CommandSize >= 8) ? Cmd->CommandSize - 8 : 0;
+          while (Remaining >= 8) {
+            Flavor = Triple[0];
+            Count  = Triple[1];
+            DEBUG ((DEBUG_INFO, "DirectKernel: LC_UNIXTHREAD flavor=%u count=%u\n", Flavor, Count));
+            if (Flavor == ARM64_THREAD_STATE_FLAVOR && Count >= 66) {
+              if ((UINTN)Triple + 8 + 33 * sizeof (UINT64) <= (UINTN)KernelBuffer + KernelSize) {
+                EntryPoint = *((UINT64 *)((UINTN)Triple + 8 + 32 * sizeof (UINT64)));
+              }
+              break;
             }
-            break;
+            if (Remaining < 8 + Count * 4) {
+              break;
+            }
+            Triple    += 2 + Count;
+            Remaining -= 8 + Count * 4;
           }
-          if (Remaining < 8 + Count * 4) {
-            break;
-          }
-          Triple    += 2 + Count;
-          Remaining -= 8 + Count * 4;
         }
-        break;
       } else if (Cmd->CommandType == MACH_LOAD_COMMAND_SEGMENT_64) {
         MACH_SEGMENT_COMMAND_64  *Seg64 = (MACH_SEGMENT_COMMAND_64 *)Cmd;
 
@@ -1001,12 +1010,13 @@ SKIP_READ_APPLE_KERNEL:
         //
         // entry_point_command: cmd(4) + cmdsize(4) + entryoff(8) + stacksize(8)
         //
-        UINT64  *MainData = (UINT64 *)((UINTN)Cmd + 8);
-        UINT64   FileOff  = MainData[0];
-        DEBUG ((DEBUG_INFO, "DirectKernel: Found LC_MAIN at index %u fileoff=0x%llx\n", Index, FileOff));
-        EntryPoint = (UINT64)(UINTN)KernelBuffer + FileOff;
-        DEBUG ((DEBUG_INFO, "DirectKernel: LC_MAIN VM entry=0x%llx\n", EntryPoint));
-        break;
+        if (EntryPoint == 0) {
+          UINT64  *MainData = (UINT64 *)((UINTN)Cmd + 8);
+          UINT64   FileOff  = MainData[0];
+          DEBUG ((DEBUG_INFO, "DirectKernel: Found LC_MAIN at index %u fileoff=0x%llx\n", Index, FileOff));
+          EntryPoint = (UINT64)(UINTN)KernelBuffer + FileOff;
+          DEBUG ((DEBUG_INFO, "DirectKernel: LC_MAIN VM entry=0x%llx\n", EntryPoint));
+        }
       }
       Cmd = (MACH_LOAD_COMMAND *)((UINTN)Cmd + Cmd->CommandSize);
     }
