@@ -202,6 +202,10 @@ STATIC UINTN EmitPrologue (UINT8 **P) {
   EmitDword(P, 0x100);
   // RBX = RCX (first arg = DBT_ARM64_STATE*, MS x64 ABI used by UEFI)
   EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xCB);  // mov rbx, rcx
+  // DIAGNOSTIC: write exec marker into SP_EL0 (offset 0x110)
+  EmitByte(P, 0xB8); EmitDword(P, 0xCAFEBABE);  // mov eax, marker (zero-extends)
+  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x83);         // mov [rbx+disp32], eax
+  EmitDword(P, 0x110);
   return (UINTN)(*P - Start);
 }
 
@@ -1159,8 +1163,8 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
   // Copy state back
   CopyMem(ArmState, &Ctx->ArmState, sizeof(DBT_ARM64_STATE));
 
-  DBG((DEBUG_INFO, "DBT: Execute done — PC=0x%llx X0=0x%llx PSTATE=0x%llx\n",
-       ArmState->PC, ArmState->X[0], ArmState->PSTATE));
+  DBG((DEBUG_INFO, "DBT: Execute done — PC=0x%llx X0=0x%llx PSTATE=0x%llx SP_EL0=0x%llx\n",
+       ArmState->PC, ArmState->X[0], ArmState->PSTATE, ArmState->SP_EL0));
 }
 
 EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, UINT64 BaseAddr, VOID *X86Code) {
