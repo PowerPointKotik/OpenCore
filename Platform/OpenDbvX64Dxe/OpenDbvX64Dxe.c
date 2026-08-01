@@ -49,6 +49,24 @@ STATIC DBT_CONTEXT  *gDbtContext     = NULL;
 STATIC EFI_HANDLE   gInstallerDevice = NULL;
 
 //
+// True when an ARM64 instruction updates PC (so a translated block must end
+// there for the dispatcher to continue from the new address).
+//
+STATIC
+BOOLEAN
+IsPcUpdatingBranch (
+  IN UINT32  Inst
+  )
+{
+  if ((Inst & 0x7C000000) == 0x14000000) return TRUE;   // B / BL
+  if ((Inst & 0xFF000010) == 0x54000000) return TRUE;   // B.cond
+  if ((Inst & 0x7E000000) == 0x34000000) return TRUE;   // CBZ / CBNZ
+  if ((Inst & 0x7E000000) == 0x36000000) return TRUE;   // TBZ / TBNZ
+  if ((Inst & 0xFE000000) == 0xD6000000) return TRUE;   // BR / BLR / RET
+  return FALSE;
+}
+
+//
 // Read kernelcache from ZIP file.
 // Returns allocated buffer with kernel data, or NULL.
 //
@@ -1038,15 +1056,65 @@ SKIP_READ_APPLE_KERNEL:
   //
   if (IsArm64 && gDbtContext != NULL) {
     DBT_ARM64_STATE  ArmContext;
-  ZeroMem (&ArmContext, sizeof (ArmContext));
-  ArmContext.X[0] = (UINT64)(UINTN)BootArgs;
-  ArmContext.SP   = (UINT64)(UINTN)(StackBuffer + StackSize);
-  ArmContext.PC   = EntryPoint;
-  ArmContext.SPSR_EL1 = 0x5;  // EL1 with all exceptions masked
+    UINT64           KernelVaBase;
+    UINT64           KernelVaEnd;
+    UINTN            Steps;
+    UINTN            MaxSteps;
 
-  DEBUG ((DEBUG_INFO, "DirectKernel: SP=0x%llx, PC=0x%llx\n", ArmContext.SP, ArmContext.PC));
+    ZeroMem (&ArmContext, sizeof (ArmContext));
+    ArmContext.X[0] = (UINT64)(UINTN)BootArgs;
+    ArmContext.SP   = (UINT64)(UINTN)(StackBuffer + StackSize);
+    ArmContext.PC   = EntryPoint;
+    ArmContext.SPSR_EL1 = 0x5;  // EL1 with all exceptions masked
 
-  DbtExecute (gDbtContext, &ArmContext);
+    DEBUG ((DEBUG_INFO, "DirectKernel: SP=0x%llx, PC=0x%llx\n", ArmContext.SP, ArmContext.PC));
+
+    //
+    // Dispatch loop: translate the straight-line block ending at the next
+    // PC-updating branch, execute it, and continue from the resulting PC.
+    // The kernel image is linked at KernelVaBase and loaded at KernelBuffer.
+    //
+    KernelVaBase = EntryPoint;
+    KernelVaEnd  = EntryPoint + KernelSize;
+    MaxSteps     = 0x4000000;  // safety valve
+
+    for (Steps = 0;
+         Steps < MaxSteps &&
+         ArmContext.PC >= KernelVaBase &&
+         ArmContext.PC <  KernelVaEnd;
+         Steps++) {
+      UINTN  Pa;
+      UINT32 Inst;
+      UINTN  Off;
+
+      Pa  = (UINTN)((UINT8 *)KernelBuffer + (UINTN)(ArmContext.PC - KernelVaBase));
+      Off = 0;
+      for (;;) {
+        if (Off + 4 > KernelSize) {
+          break;
+        }
+        Inst = *(UINT32 *)(Pa + Off);
+        if (IsPcUpdatingBranch (Inst)) {
+          break;
+        }
+        Off += 4;
+      }
+
+      if (Off + 4 > KernelSize) {
+        DEBUG ((DEBUG_INFO, "DirectKernel: kernel ran off the image at PC=0x%llx\n", ArmContext.PC));
+        break;
+      }
+
+      DbtTranslateBlock (gDbtContext, (VOID *)(Pa), Off + 4, ArmContext.PC, NULL);
+      DbtExecute (gDbtContext, &ArmContext);
+    }
+
+    if (ArmContext.PC >= KernelVaBase && ArmContext.PC < KernelVaEnd) {
+      DEBUG ((DEBUG_WARN, "DirectKernel: dispatcher step limit reached at PC=0x%llx\n", ArmContext.PC));
+    } else {
+      DEBUG ((DEBUG_INFO, "DirectKernel: kernel left image range at PC=0x%llx after %u steps\n",
+              ArmContext.PC, Steps));
+    }
 
     // Should not reach here
     FreePool (StackBuffer);
