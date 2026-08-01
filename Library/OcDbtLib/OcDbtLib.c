@@ -1083,7 +1083,12 @@ EFI_STATUS DbtInitContext (OUT DBT_CONTEXT **Context, IN UINTN CodeSize) {
   TotalSize = sizeof(DBT_CONTEXT) + CodeSize;
   Addr = BASE_4GB;
 
-  Status = gBS->AllocatePages (AllocateAnyPages, EfiBootServicesData,
+  //
+  // Allocate as executable code memory.  EfiBootServicesData pages are
+  // non-executable (NX) on firmware with memory protection enabled, which
+  // silently faults the first fetch of the translated code buffer.
+  //
+  Status = gBS->AllocatePages (AllocateAnyPages, EfiBootServicesCode,
                                EFI_SIZE_TO_PAGES(TotalSize), &Addr);
   if (EFI_ERROR(Status)) return Status;
 
@@ -1154,7 +1159,8 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
   // Copy state back
   CopyMem(ArmState, &Ctx->ArmState, sizeof(DBT_ARM64_STATE));
 
-  DBG((DEBUG_INFO, "DBT: Execute done — PC=0x%llx\n", ArmState->PC));
+  DBG((DEBUG_INFO, "DBT: Execute done — PC=0x%llx X0=0x%llx PSTATE=0x%llx\n",
+       ArmState->PC, ArmState->X[0], ArmState->PSTATE));
 }
 
 EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, UINT64 BaseAddr, VOID *X86Code) {
