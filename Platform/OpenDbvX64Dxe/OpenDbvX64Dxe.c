@@ -422,7 +422,9 @@ IsSharedSupportVolume (
 
 STATIC
 BOOLEAN
+#if defined (__GNUC__) || defined (__clang__)
 __attribute__((unused))
+#endif
 IsPrebootVolume (
   IN  EFI_HANDLE  Device
   )
