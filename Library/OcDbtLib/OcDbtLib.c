@@ -59,7 +59,6 @@ STATIC UINT8  Arm64Rd  (UINT32 Inst) { return Inst & 0x1F; }
 STATIC UINT8  Arm64Rn  (UINT32 Inst) { return (Inst >> 5) & 0x1F; }
 STATIC UINT8  Arm64Rm  (UINT32 Inst) { return (Inst >> 16) & 0x1F; }
 STATIC UINT8  Arm64Rt  (UINT32 Inst) { return Inst & 0x1F; }
-STATIC UINT8  Arm64Rt2 (UINT32 Inst) { return (Inst >> 10) & 0x1F; }
 
 //
 // DecodeBitMasks — ARM ARM pseudocode "DecodeBitMasks" for logical
@@ -125,8 +124,6 @@ STATIC CONST CHAR8 *CondNames[16] = {
   "HI", "LS", "GE", "LT", "GT", "LE", "AL", "NV"
 };
 
-STATIC CONST CHAR8 *ShiftNames[4] = { "lsl", "lsr", "asr", "ror" };
-
 // x86 Jcc opcodes for each ARM condition (taken semantics), valid after a
 // compare/test that mirrors the ARM flags; JccFalse is the inverse.  AL maps
 // to JMP (always taken), NV to 0x00 (never fires).
@@ -167,41 +164,6 @@ STATIC VOID EmitStoreRax  (UINT8 **P, UINT32 Off) {
 // MOV RAX, [RBX+off]  — load from memory to scratch reg
 STATIC VOID EmitLoadRax   (UINT8 **P, UINT32 Off) {
   EmitRexW(P); EmitByte(P, 0x8B);  // MOV r64, r/m64
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-
-// ADD RAX, [RBX+off]
-STATIC VOID EmitAddRaxMem (UINT8 **P, UINT32 Off) {
-  EmitRexW(P); EmitByte(P, 0x03);  // ADD r64, r/m64
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-
-// SUB RAX, [RBX+off]
-STATIC VOID EmitSubRaxMem (UINT8 **P, UINT32 Off) {
-  EmitRexW(P); EmitByte(P, 0x2B);  // SUB r64, r/m64
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-
-// AND RAX, [RBX+off]
-STATIC VOID EmitAndRaxMem (UINT8 **P, UINT32 Off) {
-  EmitRexW(P); EmitByte(P, 0x23);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-
-// OR  RAX, [RBX+off]
-STATIC VOID EmitOrRaxMem  (UINT8 **P, UINT32 Off) {
-  EmitRexW(P); EmitByte(P, 0x0B);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-
-// XOR RAX, [RBX+off]
-STATIC VOID EmitXorRaxMem (UINT8 **P, UINT32 Off) {
-  EmitRexW(P); EmitByte(P, 0x33);
   if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
   else { EmitByte(P, 0x83); EmitDword(P, Off); }
 }
@@ -303,13 +265,6 @@ STATIC VOID EmitMemAccess (UINT8 **P, UINT32 Size, UINT32 Opc, BOOLEAN Sf, UINT3
   EmitStoreRax(P, RtOff);
 }
 
-// CMP RAX, [RBX+off] — flags from RAX - mem
-STATIC VOID EmitCmpRaxMem (UINT8 **P, UINT32 Off) {
-  EmitRexW(P); EmitByte(P, 0x3B);  // CMP r64, r/m64
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-
 // CMP RAX, imm32 (sign-extended)
 STATIC VOID EmitCmpRaxImm32 (UINT8 **P, UINT32 Imm) {
   EmitRexW(P); EmitByte(P, 0x3D); EmitDword(P, Imm);
@@ -346,20 +301,8 @@ STATIC VOID EmitXorRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x31); EmitByte
 STATIC VOID EmitAddRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x01); EmitByte(P, 0xC8); }
 STATIC VOID EmitSubRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x29); EmitByte(P, 0xC8); }
 
-// ADD RCX, RAX
-STATIC VOID EmitAddRcxRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x01); EmitByte(P, 0xC1); }
-
-// AND RCX, [RBX+off]  /  AND RCX, RAX
-STATIC VOID EmitAndRcxMem (UINT8 **P, UINT32 Off) {
-  EmitRexW(P); EmitByte(P, 0x23);  // AND r64, r/m64
-  if (Off < 128) { EmitByte(P, 0x4B); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x8B); EmitDword(P, Off); }
-}
-
 // Shifts of RAX / RCX by immediate
-STATIC VOID EmitShlRaxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xE0); EmitByte(P, Cnt); }
 STATIC VOID EmitShrRaxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xE8); EmitByte(P, Cnt); }
-STATIC VOID EmitSarRaxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xF8); EmitByte(P, Cnt); }
 STATIC VOID EmitRorRaxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xC8); EmitByte(P, Cnt); }
 STATIC VOID EmitShlRcxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xE1); EmitByte(P, Cnt); }
 STATIC VOID EmitShrRcxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xE9); EmitByte(P, Cnt); }
@@ -375,54 +318,10 @@ STATIC VOID EmitShiftRcx (UINT8 **P, UINT8 Kind, UINT8 Amt) {
   else { EmitRorRcxImm(P, Amt); }
 }
 
-// Apply a recorded register-form shift to RAX (same kinds)
-STATIC VOID EmitShiftRax (UINT8 **P, UINT8 Kind, UINT8 Amt) {
-  if (Kind == 0 || Amt == 0) { return; }
-  if (Kind == 1) { EmitShlRaxImm(P, Amt); }
-  else if (Kind == 2) { EmitShrRaxImm(P, Amt); }
-  else if (Kind == 3) { EmitSarRaxImm(P, Amt); }
-  else { EmitRorRaxImm(P, Amt); }
-}
-
-// Variable shifts of RAX by CL
-STATIC VOID EmitShlRaxCl (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xD3); EmitByte(P, 0xE0); }
-STATIC VOID EmitShrRaxCl (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xD3); EmitByte(P, 0xE8); }
-STATIC VOID EmitSarRaxCl (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xD3); EmitByte(P, 0xF8); }
-STATIC VOID EmitRorRaxCl (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xD3); EmitByte(P, 0xC8); }
-
 // NOT / NEG RAX, zero-extend EAX (32-bit truncation)
 STATIC VOID EmitNotRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xD0); }
-STATIC VOID EmitNegRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xD8); }
 STATIC VOID EmitNotRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xD1); }
 STATIC VOID EmitTrunc32 (UINT8 **P) { EmitByte(P, 0x89); EmitByte(P, 0xC0); }  // MOV EAX, EAX
-
-// IMUL RAX, RCX  (64-bit signed) / SHRD RAX, RCX, imm
-STATIC VOID EmitImulRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0xAF); EmitByte(P, 0xC1); }
-STATIC VOID EmitShrdRaxRcxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0xAC); EmitByte(P, 0xC1); EmitByte(P, Cnt); }
-
-// ADC / SBB RAX, RCX  (reads/writes CF)
-STATIC VOID EmitAdcRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x11); EmitByte(P, 0xC8); }
-STATIC VOID EmitSbbRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x19); EmitByte(P, 0xC8); }
-STATIC VOID EmitCmc (UINT8 **P) { EmitByte(P, 0xF5); }
-
-// Signed/unsigned 64-bit division: RAX / RCX -> RAX (requires RDX pre-set)
-STATIC VOID EmitCqo (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x99); }
-STATIC VOID EmitIdivRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xF9); }
-STATIC VOID EmitDivRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xF1); }
-STATIC VOID EmitXorRdxRdx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x31); EmitByte(P, 0xD2); }
-
-// MOV DL, [RBX+off]  (PSTATE access), TEST RAX, RAX
-STATIC VOID EmitLoadRdlMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x8A);
-  if (Off < 128) { EmitByte(P, 0x53); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x93); EmitDword(P, Off); }
-}
-STATIC VOID EmitTestRaxRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x85); EmitByte(P, 0xC0); }
-
-// CMOVcc RAX, RCX — cc is the Jcc encoding (0x44+z for CMOV)
-STATIC VOID EmitCmovRaxRcx (UINT8 **P, UINT8 Jcc) {
-  EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, (UINT8)(0x40 + (Jcc & 0x0F))); EmitByte(P, 0xC1);
-}
 
 // BT RAX, imm8 (CF = RAX<imm>) / SBB RDX, RDX (RDX = -CF)
 STATIC VOID EmitBitTestRax (UINT8 **P, UINT8 Bit) {
@@ -431,207 +330,6 @@ STATIC VOID EmitBitTestRax (UINT8 **P, UINT8 Bit) {
 STATIC VOID EmitSbbRdxRdx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x19); EmitByte(P, 0xD2); }
 STATIC VOID EmitAndRdxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x21); EmitByte(P, 0xCA); }
 STATIC VOID EmitOrRaxRdx  (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x09); EmitByte(P, 0xD0); }
-
-// =========== XMM (SIMD/FP) emitters ===========
-// All scalar S/D ops operate on XMM0 with a memory operand in the state.
-// Qlo[32]/Qhi[32] hold V0-V31; scalar S uses Qlo[Rt][31:0], D uses Qlo[Rt].
-
-// MOVSD/MOVSS XMM0, [RBX+off]  and  [RBX+off], XMM0
-STATIC VOID EmitMovsdXmm0Mem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x10);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitMovsdMemXmm0 (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x11);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitMovssXmm0Mem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x10);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitMovssMemXmm0 (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x11);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-
-// FADD/FSUB/FMUL/FDIV/FSQRT/FCMP XMM0, [RBX+off]
-STATIC VOID EmitAddsdMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x58);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitSubsdMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x5C);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitMulsdMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x59);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitDivsdMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x5E);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitSqrtsdMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x51);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitComisdMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x2F);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-// S-precision variants
-STATIC VOID EmitAddssMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x58);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitSubssMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x5C);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitMulssMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x59);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitDivssMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x5E);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitSqrtssMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x51);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitComissMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x2F);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-
-// CVTSS2SD / CVTSD2SS XMM0, XMM0  (in-place precision conversion)
-STATIC VOID EmitCvtss2sd (UINT8 **P) { EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x5A); EmitByte(P, 0xC0); }
-STATIC VOID EmitCvtsd2ss (UINT8 **P) { EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x5A); EmitByte(P, 0xC0); }
-
-// CVTSI2SD XMM0, RAX (64-bit int -> double), CVTTSD2SI RAX, XMM0 (double -> int64)
-STATIC VOID EmitCvtsi2sdRax (UINT8 **P) { EmitByte(P, 0xF2); EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0x2A); EmitByte(P, 0xC0); }
-STATIC VOID EmitCvttsd2siRax (UINT8 **P) { EmitByte(P, 0xF2); EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0x2C); EmitByte(P, 0xC0); }
-
-// MOVDQU XMM0, [RAX] / [RAX], XMM0  (128-bit guest memory access)
-STATIC VOID EmitMovdquXmm0Rax (UINT8 **P) { EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x6F); EmitByte(P, 0x00); }
-STATIC VOID EmitMovdquRaxXmm0 (UINT8 **P) { EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x7F); EmitByte(P, 0x00); }
-
-// MOVQ XMM0, RAX / RAX, XMM0  (64-bit int <-> vector)
-STATIC VOID EmitMovqXmm0Rax (UINT8 **P) { EmitByte(P, 0x66); EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0x6E); EmitByte(P, 0xC0); }
-STATIC VOID EmitMovqRaxXmm0 (UINT8 **P) { EmitByte(P, 0x66); EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0x7E); EmitByte(P, 0xC0); }
-// MOVQ XMM0, [RBX+off] / [RBX+off], XMM0  (context slot)
-STATIC VOID EmitMovqXmm0Mem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0x6E);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitMovqMemXmm0 (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0x7E);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-// MOVHPS [RBX+off], XMM0  (high 64 bits to context)
-STATIC VOID EmitMovhpsMemXmm0 (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x0F); EmitByte(P, 0x17);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitMovhpsXmm0Mem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x0F); EmitByte(P, 0x16);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-
-// PADDB/PADDW/PADDD/PADDQ and PSUBB.. XMM0, [RBX+off]
-STATIC VOID EmitPaddbMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xFC);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitPaddwMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xFD);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitPadddMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xFE);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitPaddqMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xD4);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitPsubbMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xF8);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitPsubwMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xF9);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitPsubdMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xFA);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitPsubqMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xFB);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-// PAND/POR/PXOR/PANDN XMM0, [RBX+off]
-STATIC VOID EmitPandMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xDB);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitPorMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xEB);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitPxorMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xEF);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-STATIC VOID EmitPandnMem (UINT8 **P, UINT32 Off) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xDF);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-// PSHUFB XMM0, XMM0, imm (SSSE3) / PUNPCKLBW XMM0, XMM0 / PUNPCKLDQ / PUNPCKLQDQ
-STATIC VOID EmitPshufdXmm0Imm (UINT8 **P, UINT8 Imm) {
-  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x70); EmitByte(P, 0xC0); EmitByte(P, Imm);
-}
-STATIC VOID EmitPunpcklbwXmm0Xmm0 (UINT8 **P) { EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x60); EmitByte(P, 0xC0); }
-STATIC VOID EmitPunpcklwdXmm0Xmm0 (UINT8 **P) { EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x61); EmitByte(P, 0xC0); }
-STATIC VOID EmitPunpckldqXmm0Xmm0 (UINT8 **P) { EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x62); EmitByte(P, 0xC0); }
-STATIC VOID EmitPunpcklqdqXmm0Xmm0 (UINT8 **P) { EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x6C); EmitByte(P, 0xC0); }
-
-// XORPS XMM0, XMM0  (zero)
-STATIC VOID EmitXorpsXmm0Xmm0 (UINT8 **P) { EmitByte(P, 0x0F); EmitByte(P, 0x57); EmitByte(P, 0xC0); }
 
 // =========== Prologue / Epilogue ===========
 STATIC UINTN EmitPrologue (UINT8 **P) {
@@ -790,8 +488,6 @@ STATIC VOID EmitConstNzcv (UINT8 **P, UINT8 Nzcv) {
 STATIC VOID EmitComputeFlagsFromSet (UINT8 **Q, DBT_FLAG_SET *Set) {
   UINT32  RnOff;
   UINT32  RmOff;
-  UINT8  *Lcmp = NULL;
-  UINT8  *Ldone = NULL;
   UINT8   NoTargets[1] = { 0 };
   BOOLEAN IsLogical = (Set->Kind == FLAGKIND_LOGICAL);
   BOOLEAN Clobbered;
@@ -1191,7 +887,7 @@ STATIC UINT8 NzcvToPstate (UINT8 Nzcv) {
 // PSTATE-format flags byte.
 //
 STATIC UINT8 DbtComputeNzcvSet (IN DBT_CONTEXT *Ctx, IN DBT_FLAG_SET *S) {
-  UINT64        A, B, R, W;
+  UINT64        A, B, R;
   UINT8         Byte;
   BOOLEAN       N, Z, C, V;
   UINT8         PrevByte;
@@ -1313,13 +1009,11 @@ STATIC UINTN DbtTranslateOne (
   UINT8   Rn  = Arm64Rn(Inst);
   UINT8   Rm  = Arm64Rm(Inst);
   UINT8   Rt  = Arm64Rt(Inst);
-  UINT8   Rt2 = Arm64Rt2(Inst);
 
   UINTN   RdOff = ArmRegXOff(Rd);
   UINTN   RnOff = ArmRegXOff(Rn);
   UINTN   RmOff = ArmRegXOff(Rm);
   UINTN   RtOff = ArmRegXOff(Rt);
-  UINTN   Rt2Off= ArmRegXOff(Rt2);
   UINTN   PcOff = ArmRegPcOff();
   UINTN   SpOff = ArmRegSpOff();
 
@@ -1459,7 +1153,6 @@ STATIC UINTN DbtTranslateOne (
         BOOLEAN IsSbfm = (Sub == 6 && Opc == 0);
         BOOLEAN IsBfm  = (Sub == 6 && Opc == 1);
         BOOLEAN IsUbfm = (Sub == 6 && Opc == 2);
-        UINT32  W;
 
         if (!(IsSbfm || IsUbfm || IsBfm) ||
             (((Inst >> 22) & 1) != (UINT32)Sf) ||
@@ -1497,9 +1190,7 @@ STATIC UINTN DbtTranslateOne (
           if (!Sf) { EmitTrunc32(&P); }
           EmitStoreRax(&P, RdOff);
         } else {
-          // BFM: W = wmask & tmask
-          //      Xd = (Rd & ~W) | (ROR(Rn, immr) & W)
-          W = (UINT32)(Wmask & Tmask);
+          // BFM: Xd = (Rd & ~(wmask & tmask)) | (ROR(Rn, immr) & (wmask & tmask))
           DBG((DEBUG_INFO, "DBT_ASM:    BFM%s X%d, X%d, #%u, #%u\n",
                Sf ? "" : "W", Rd, Rn, Immr, Imms));
           EmitLoadRax(&P, RdOff);
