@@ -15,7 +15,9 @@
 #define FLAGKIND_ADDSUB   0
 #define FLAGKIND_LOGICAL  1
 
-typedef struct {
+typedef struct DBT_FLAG_SET DBT_FLAG_SET;
+
+typedef struct DBT_FLAG_SET {
   BOOLEAN  HasSetter;   // a flag-setting instruction is live in this block
   UINT8    Kind;        // FLAGKIND_ADDSUB or FLAGKIND_LOGICAL
   BOOLEAN  IsSub;       // ADD/SUB: subtract (carry semantics differ)
@@ -25,6 +27,14 @@ typedef struct {
   UINT8    Rm;          // second source register (register form)
   UINT64   Imm;         // immediate (addsub-imm form, imm12 shifted)
   BOOLEAN  HasReg2;     // TRUE: register form (Rm), FALSE: immediate (Imm)
+  UINT8    ShiftKind;   // register form: 0=none 1=LSL 2=LSR 3=ASR (ROR)
+  UINT8    ShiftAmt;    // register form: shift amount applied to Rm
+  BOOLEAN  IsW;         // 32-bit (W-register) form: truncate operands/result
+  BOOLEAN  IsCcmp;      // CCMP/CCMN setter: flags are cond-gated
+  UINT8    Cond;        // CSEL family condition, or CCMP's gate condition
+  UINT8    Nzcv;        // CCMP false path: NZCV immediate (N=8 Z=4 C=2 V=1)
+  BOOLEAN  HasPrev;     // CCMP: Prev holds the setter before the CCMP
+  DBT_FLAG_SET *Prev;   // setter whose flags gate the CCMP condition
 } DBT_FLAG_SET;
 
 typedef struct DBT_CONTEXT {
@@ -33,11 +43,18 @@ typedef struct DBT_CONTEXT {
   CHAR16          *KernelPath;
   DBT_ARM64_STATE  ArmState;
   UINT64           SysRegs[256];
+  UINTN            SegCount;
+  UINT64          *SegVmAddr;
+  UINT64          *SegVmSize;
+  UINT64          *SegFileOff;
+  UINT8           *KernelBuffer;
   VOID            *TranslatedCode;
   UINTN            TranslatedSize;
   UINTN            CodeCapacity;
   UINT8           *JumpSlot;
   UINT8           *LastBlockStart;
   DBT_FLAG_SET     FlagSet;
+  DBT_FLAG_SET     PrevSlots[8];  // CCMP gate-chain snapshot pool
+  UINTN            PrevCount;
   UINT8            CodeBuffer[0];
 } DBT_CONTEXT;

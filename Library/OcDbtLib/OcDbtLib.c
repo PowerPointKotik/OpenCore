@@ -33,6 +33,25 @@
 STATIC DBT_ARM64_STATE *gDbtActiveState = NULL;
 
 //
+// Context pointer and guest-address scratch slot for the host-side data
+// translation helper (DbtMapHostAddr).  The translated LDR/STR code stores
+// the guest effective address into gDbtHelperVa, calls DbtMapHostAddr with
+// no arguments (again ABI-agnostic), and uses the returned host address.
+// The guest VAs of the loaded kernel image are not mapped at the same
+// addresses on the x86 host, so raw loads/stores would fault (silently
+// swallowed by the firmware handler) and leave the guest register zeroed,
+// e.g. the CBZ self-spin at 0xFFFFFE000C52C10C on the kernel boot path.
+//
+STATIC DBT_CONTEXT *gDbtActiveCtx = NULL;
+STATIC UINT64       gDbtHelperVa  = 0;
+
+//
+// Host-side VA->host-address helper invoked by the translated LDR/STR
+// code (forward declaration; defined in the MMU helpers section).
+//
+UINT64 DbtMapHostAddr (VOID);
+
+//
 // =========== ARM64 instruction decode helpers ===========
 //
 STATIC UINT32 Arm64Op0 (UINT32 Inst) { return (Inst >> 25) & 0xF; }
@@ -42,10 +61,82 @@ STATIC UINT8  Arm64Rm  (UINT32 Inst) { return (Inst >> 16) & 0x1F; }
 STATIC UINT8  Arm64Rt  (UINT32 Inst) { return Inst & 0x1F; }
 STATIC UINT8  Arm64Rt2 (UINT32 Inst) { return (Inst >> 10) & 0x1F; }
 
+//
+// DecodeBitMasks — ARM ARM pseudocode "DecodeBitMasks" for logical
+// immediate and bitfield instructions.  Computes wmask/tmask from the
+// N:immr:imms fields.  "Immediate" selects the logical-immediate
+// constraint (all-ones element value reserved).  Returns FALSE on
+// UNDEFINED encodings.
+//
+STATIC BOOLEAN
+Arm64DecodeBitMasks (
+  UINT32   Inst,
+  BOOLEAN  Immediate,
+  UINT64   *Wmask,
+  UINT64   *Tmask
+  )
+{
+  UINT32  N, Imms, Immr;
+  UINT32  Pattern, Length, Esize, Levels, S, R;
+  UINT64  W, T, Full;
+
+  N     = (Inst >> 22) & 1;
+  Immr  = (Inst >> 16) & 0x3F;
+  Imms  = (Inst >> 10) & 0x3F;
+
+  //
+  // len = HighestSetBitNZ(immN::NOT(imms));  '000000x' is UNDEFINED
+  //
+  Pattern = (N << 6) | ((~Imms) & 0x3F);
+  if (Pattern == 0 || Pattern == 1) {
+    return FALSE;
+  }
+  Length = 31 - (UINT32)__builtin_clz(Pattern);
+  Esize  = 1u << Length;
+
+  Levels = (1u << Length) - 1;
+  if (Immediate && ((Imms & Levels) == Levels)) {
+    // all-ones element value reserved (would give all-ones result)
+    return FALSE;
+  }
+  S = Imms & Levels;
+  R = Immr & Levels;
+
+  W = (S + 1 == 64) ? ~0ULL : (((UINT64)1 << (S + 1)) - 1); // Ones{S+1}
+  if (R != 0) {
+    UINT64 Emask = (Esize == 64) ? ~0ULL : ((UINT64)1 << Esize) - 1;
+    W = ((W >> R) | (W << (Esize - R))) & Emask;  // ROR within element
+  }
+  Full = W;
+  while (Esize < 64) {
+    Full |= Full << Esize;
+    Esize <<= 1;
+  }
+  *Wmask = Full;
+
+  // tmask = Replicate{Ones{d+1}}, d = (s - r) mod 2^len
+  T = ((S + 64 - R) & Levels);                    // diff<len-1:0>
+  *Tmask = (T + 1 == 64) ? ~0ULL : (((UINT64)1 << (T + 1)) - 1);
+  return TRUE;
+}
+
 STATIC CONST CHAR8 *CondNames[16] = {
   "EQ", "NE", "CS", "CC", "MI", "PL", "VS", "VC",
   "HI", "LS", "GE", "LT", "GT", "LE", "AL", "NV"
 };
+
+STATIC CONST CHAR8 *ShiftNames[4] = { "lsl", "lsr", "asr", "ror" };
+
+// x86 Jcc opcodes for each ARM condition (taken semantics), valid after a
+// compare/test that mirrors the ARM flags; JccFalse is the inverse.  AL maps
+// to JMP (always taken), NV to 0x00 (never fires).
+// x86 CMP/SUB leave CF = borrow, i.e. CF = NOT ARM C; the CS/LO conditions
+// follow that convention (CS -> JNC, LO -> JB), as do HI/LS via JA/JBE.
+STATIC UINT8 CondJccTrue[16]  = { 0x74, 0x75, 0x73, 0x72, 0x78, 0x79, 0x70, 0x71,
+                                  0x77, 0x76, 0x7D, 0x7C, 0x7F, 0x7E, 0xEB, 0x00 };
+STATIC UINT8 CondJccFalse[16] = { 0x75, 0x74, 0x72, 0x73, 0x79, 0x78, 0x71, 0x70,
+                                  0x76, 0x77, 0x7C, 0x7D, 0x7E, 0x7F, 0x00, 0xEB };
+// EQ NE CS CC MI PL VS VC HI LS GE LT GT LE AL NV
 
 //
 // ARM64 register offset in DBT_ARM64_STATE
@@ -160,6 +251,58 @@ STATIC VOID EmitLoadRcx (UINT8 **P, UINT32 Off) {
   else { EmitByte(P, 0x8B); EmitDword(P, Off); }
 }
 
+//
+// Emit:  gDbtHelperVa = RCX;  RAX = DbtMapHostAddr();
+// The guest effective address is delivered to the host helper through the
+// global instead of a register so the call needs no ABI.  RAX returns the
+// host address corresponding to the guest VA (identity for non-image VAs).
+//
+STATIC VOID EmitCallMapHelper (UINT8 **P) {
+  EmitMovImm(P, (UINT64)(UINTN)&gDbtHelperVa);   // RAX = &gDbtHelperVa
+  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x08);      // MOV [RAX], RCX
+  EmitMovImm(P, (UINT64)(UINTN)DbtMapHostAddr);           // RAX = DbtMapHostAddr
+  EmitByte(P, 0xFF); EmitByte(P, 0xD0);                   // CALL RAX
+}
+
+//
+// Emit the load/store once RAX holds the mapped host address.
+//   Size: 0=B, 1=H, 2=W, 3=X    Opc: 0=STR, 1=LDR, 2=LDRS (sign-extend),
+//   3=PRFM (no access).  Sf is the 64-bit register form (W loads clear the
+//   upper 32 bits).  RtOff holds the value for stores.
+//
+STATIC VOID EmitMemAccess (UINT8 **P, UINT32 Size, UINT32 Opc, BOOLEAN Sf, UINT32 RtOff) {
+  if (Opc == 3) {          // PRFM — prefetch, no architectural effect
+    EmitNop(P);
+    return;
+  }
+  if (Opc == 0) {          // STR
+    EmitLoadRcx(P, RtOff); // RCX = value
+    if (Size == 0) { EmitByte(P, 0x88); EmitByte(P, 0x08); }              // MOV [RAX], CL
+    else if (Size == 1) { EmitByte(P, 0x66); EmitByte(P, 0x89); EmitByte(P, 0x08); }  // MOV [RAX], CX
+    else if (Size == 2) { EmitByte(P, 0x89); EmitByte(P, 0x08); }        // MOV [RAX], ECX
+    else { EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x08); }          // MOV [RAX], RCX
+    return;
+  }
+  // LDR / LDRSB / LDRSH / LDRSW
+  if (Opc == 1) {
+    if (Size == 0) { EmitByte(P, 0x0F); EmitByte(P, 0xB6); EmitByte(P, 0x00); }  // MOVZX EAX, [RAX]
+    else if (Size == 1) { EmitByte(P, 0x0F); EmitByte(P, 0xB7); EmitByte(P, 0x00); }  // MOVZX EAX, [RAX]
+    else if (Size == 2) { EmitByte(P, 0x8B); EmitByte(P, 0x00); }        // MOV EAX, [RAX]
+    else { EmitRexW(P); EmitByte(P, 0x8B); EmitByte(P, 0x00); }          // MOV RAX, [RAX]
+  } else {
+    if (Size == 0) {
+      if (Sf) { EmitRexW(P); }                                            // MOVSX r64, [RAX]
+      EmitByte(P, 0x0F); EmitByte(P, 0xBE); EmitByte(P, 0x00);
+    } else if (Size == 1) {
+      if (Sf) { EmitRexW(P); }                                            // MOVSX r64, [RAX]
+      EmitByte(P, 0x0F); EmitByte(P, 0xBF); EmitByte(P, 0x00);
+    } else {
+      EmitRexW(P); EmitByte(P, 0x63); EmitByte(P, 0x00);                  // MOVSX RAX, dword [RAX]
+    }
+  }
+  EmitStoreRax(P, RtOff);
+}
+
 // CMP RAX, [RBX+off] — flags from RAX - mem
 STATIC VOID EmitCmpRaxMem (UINT8 **P, UINT32 Off) {
   EmitRexW(P); EmitByte(P, 0x3B);  // CMP r64, r/m64
@@ -183,13 +326,312 @@ STATIC VOID EmitNegRcx (UINT8 **P) {
 }
 
 // MOV [RBX+off], RCX — store RCX to context
-#if 0
 STATIC VOID EmitStoreRcx (UINT8 **P, UINT32 Off) {
   EmitRexW(P); EmitByte(P, 0x89);  // MOV r/m64, r64
   if (Off < 128) { EmitByte(P, 0x4B); EmitByte(P, (UINT8)Off); }
   else { EmitByte(P, 0x8B); EmitDword(P, Off); }
 }
-#endif
+
+// =========== Extended integer emitters ===========
+
+// MOV RCX, imm64
+STATIC VOID EmitMovRcxImm (UINT8 **P, UINT64 Val) {
+  EmitRexW(P); EmitByte(P, 0xB9); EmitQword(P, Val);
+}
+
+// AND/OR/XOR/ADD/SUB RAX, RCX
+STATIC VOID EmitAndRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x21); EmitByte(P, 0xC8); }
+STATIC VOID EmitOrRaxRcx  (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x09); EmitByte(P, 0xC8); }
+STATIC VOID EmitXorRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x31); EmitByte(P, 0xC8); }
+STATIC VOID EmitAddRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x01); EmitByte(P, 0xC8); }
+STATIC VOID EmitSubRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x29); EmitByte(P, 0xC8); }
+
+// ADD RCX, RAX
+STATIC VOID EmitAddRcxRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x01); EmitByte(P, 0xC1); }
+
+// AND RCX, [RBX+off]  /  AND RCX, RAX
+STATIC VOID EmitAndRcxMem (UINT8 **P, UINT32 Off) {
+  EmitRexW(P); EmitByte(P, 0x23);  // AND r64, r/m64
+  if (Off < 128) { EmitByte(P, 0x4B); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x8B); EmitDword(P, Off); }
+}
+
+// Shifts of RAX / RCX by immediate
+STATIC VOID EmitShlRaxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xE0); EmitByte(P, Cnt); }
+STATIC VOID EmitShrRaxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xE8); EmitByte(P, Cnt); }
+STATIC VOID EmitSarRaxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xF8); EmitByte(P, Cnt); }
+STATIC VOID EmitRorRaxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xC8); EmitByte(P, Cnt); }
+STATIC VOID EmitShlRcxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xE1); EmitByte(P, Cnt); }
+STATIC VOID EmitShrRcxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xE9); EmitByte(P, Cnt); }
+STATIC VOID EmitSarRcxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xF9); EmitByte(P, Cnt); }
+STATIC VOID EmitRorRcxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0xC1); EmitByte(P, 0xC9); EmitByte(P, Cnt); }
+
+// Apply a recorded register-form shift (1=LSL 2=LSR 3=ASR 4=ROR)
+STATIC VOID EmitShiftRcx (UINT8 **P, UINT8 Kind, UINT8 Amt) {
+  if (Kind == 0 || Amt == 0) { return; }
+  if (Kind == 1) { EmitShlRcxImm(P, Amt); }
+  else if (Kind == 2) { EmitShrRcxImm(P, Amt); }
+  else if (Kind == 3) { EmitSarRcxImm(P, Amt); }
+  else { EmitRorRcxImm(P, Amt); }
+}
+
+// Apply a recorded register-form shift to RAX (same kinds)
+STATIC VOID EmitShiftRax (UINT8 **P, UINT8 Kind, UINT8 Amt) {
+  if (Kind == 0 || Amt == 0) { return; }
+  if (Kind == 1) { EmitShlRaxImm(P, Amt); }
+  else if (Kind == 2) { EmitShrRaxImm(P, Amt); }
+  else if (Kind == 3) { EmitSarRaxImm(P, Amt); }
+  else { EmitRorRaxImm(P, Amt); }
+}
+
+// Variable shifts of RAX by CL
+STATIC VOID EmitShlRaxCl (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xD3); EmitByte(P, 0xE0); }
+STATIC VOID EmitShrRaxCl (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xD3); EmitByte(P, 0xE8); }
+STATIC VOID EmitSarRaxCl (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xD3); EmitByte(P, 0xF8); }
+STATIC VOID EmitRorRaxCl (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xD3); EmitByte(P, 0xC8); }
+
+// NOT / NEG RAX, zero-extend EAX (32-bit truncation)
+STATIC VOID EmitNotRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xD0); }
+STATIC VOID EmitNegRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xD8); }
+STATIC VOID EmitNotRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xD1); }
+STATIC VOID EmitTrunc32 (UINT8 **P) { EmitByte(P, 0x89); EmitByte(P, 0xC0); }  // MOV EAX, EAX
+
+// IMUL RAX, RCX  (64-bit signed) / SHRD RAX, RCX, imm
+STATIC VOID EmitImulRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0xAF); EmitByte(P, 0xC1); }
+STATIC VOID EmitShrdRaxRcxImm (UINT8 **P, UINT8 Cnt) { EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0xAC); EmitByte(P, 0xC1); EmitByte(P, Cnt); }
+
+// ADC / SBB RAX, RCX  (reads/writes CF)
+STATIC VOID EmitAdcRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x11); EmitByte(P, 0xC8); }
+STATIC VOID EmitSbbRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x19); EmitByte(P, 0xC8); }
+STATIC VOID EmitCmc (UINT8 **P) { EmitByte(P, 0xF5); }
+
+// Signed/unsigned 64-bit division: RAX / RCX -> RAX (requires RDX pre-set)
+STATIC VOID EmitCqo (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x99); }
+STATIC VOID EmitIdivRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xF9); }
+STATIC VOID EmitDivRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xF1); }
+STATIC VOID EmitXorRdxRdx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x31); EmitByte(P, 0xD2); }
+
+// MOV DL, [RBX+off]  (PSTATE access), TEST RAX, RAX
+STATIC VOID EmitLoadRdlMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x8A);
+  if (Off < 128) { EmitByte(P, 0x53); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x93); EmitDword(P, Off); }
+}
+STATIC VOID EmitTestRaxRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x85); EmitByte(P, 0xC0); }
+
+// CMOVcc RAX, RCX — cc is the Jcc encoding (0x44+z for CMOV)
+STATIC VOID EmitCmovRaxRcx (UINT8 **P, UINT8 Jcc) {
+  EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, (UINT8)(0x40 + (Jcc & 0x0F))); EmitByte(P, 0xC1);
+}
+
+// BT RAX, imm8 (CF = RAX<imm>) / SBB RDX, RDX (RDX = -CF)
+STATIC VOID EmitBitTestRax (UINT8 **P, UINT8 Bit) {
+  EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0xBA); EmitByte(P, 0xE0); EmitByte(P, Bit);
+}
+STATIC VOID EmitSbbRdxRdx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x19); EmitByte(P, 0xD2); }
+STATIC VOID EmitAndRdxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x21); EmitByte(P, 0xCA); }
+STATIC VOID EmitOrRaxRdx  (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x09); EmitByte(P, 0xD0); }
+
+// =========== XMM (SIMD/FP) emitters ===========
+// All scalar S/D ops operate on XMM0 with a memory operand in the state.
+// Qlo[32]/Qhi[32] hold V0-V31; scalar S uses Qlo[Rt][31:0], D uses Qlo[Rt].
+
+// MOVSD/MOVSS XMM0, [RBX+off]  and  [RBX+off], XMM0
+STATIC VOID EmitMovsdXmm0Mem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x10);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitMovsdMemXmm0 (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x11);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitMovssXmm0Mem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x10);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitMovssMemXmm0 (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x11);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+
+// FADD/FSUB/FMUL/FDIV/FSQRT/FCMP XMM0, [RBX+off]
+STATIC VOID EmitAddsdMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x58);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitSubsdMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x5C);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitMulsdMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x59);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitDivsdMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x5E);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitSqrtsdMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x51);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitComisdMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x2F);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+// S-precision variants
+STATIC VOID EmitAddssMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x58);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitSubssMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x5C);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitMulssMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x59);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitDivssMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x5E);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitSqrtssMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x51);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitComissMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x2F);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+
+// CVTSS2SD / CVTSD2SS XMM0, XMM0  (in-place precision conversion)
+STATIC VOID EmitCvtss2sd (UINT8 **P) { EmitByte(P, 0xF3); EmitByte(P, 0x0F); EmitByte(P, 0x5A); EmitByte(P, 0xC0); }
+STATIC VOID EmitCvtsd2ss (UINT8 **P) { EmitByte(P, 0xF2); EmitByte(P, 0x0F); EmitByte(P, 0x5A); EmitByte(P, 0xC0); }
+
+// CVTSI2SD XMM0, RAX (64-bit int -> double), CVTTSD2SI RAX, XMM0 (double -> int64)
+STATIC VOID EmitCvtsi2sdRax (UINT8 **P) { EmitByte(P, 0xF2); EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0x2A); EmitByte(P, 0xC0); }
+STATIC VOID EmitCvttsd2siRax (UINT8 **P) { EmitByte(P, 0xF2); EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0x2C); EmitByte(P, 0xC0); }
+
+// MOVDQU XMM0, [RAX] / [RAX], XMM0  (128-bit guest memory access)
+STATIC VOID EmitMovdquXmm0Rax (UINT8 **P) { EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x6F); EmitByte(P, 0x00); }
+STATIC VOID EmitMovdquRaxXmm0 (UINT8 **P) { EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x7F); EmitByte(P, 0x00); }
+
+// MOVQ XMM0, RAX / RAX, XMM0  (64-bit int <-> vector)
+STATIC VOID EmitMovqXmm0Rax (UINT8 **P) { EmitByte(P, 0x66); EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0x6E); EmitByte(P, 0xC0); }
+STATIC VOID EmitMovqRaxXmm0 (UINT8 **P) { EmitByte(P, 0x66); EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0x7E); EmitByte(P, 0xC0); }
+// MOVQ XMM0, [RBX+off] / [RBX+off], XMM0  (context slot)
+STATIC VOID EmitMovqXmm0Mem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0x6E);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitMovqMemXmm0 (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0x7E);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+// MOVHPS [RBX+off], XMM0  (high 64 bits to context)
+STATIC VOID EmitMovhpsMemXmm0 (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x0F); EmitByte(P, 0x17);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitMovhpsXmm0Mem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x0F); EmitByte(P, 0x16);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+
+// PADDB/PADDW/PADDD/PADDQ and PSUBB.. XMM0, [RBX+off]
+STATIC VOID EmitPaddbMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xFC);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitPaddwMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xFD);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitPadddMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xFE);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitPaddqMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xD4);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitPsubbMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xF8);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitPsubwMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xF9);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitPsubdMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xFA);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitPsubqMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xFB);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+// PAND/POR/PXOR/PANDN XMM0, [RBX+off]
+STATIC VOID EmitPandMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xDB);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitPorMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xEB);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitPxorMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xEF);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+STATIC VOID EmitPandnMem (UINT8 **P, UINT32 Off) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0xDF);
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+// PSHUFB XMM0, XMM0, imm (SSSE3) / PUNPCKLBW XMM0, XMM0 / PUNPCKLDQ / PUNPCKLQDQ
+STATIC VOID EmitPshufdXmm0Imm (UINT8 **P, UINT8 Imm) {
+  EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x70); EmitByte(P, 0xC0); EmitByte(P, Imm);
+}
+STATIC VOID EmitPunpcklbwXmm0Xmm0 (UINT8 **P) { EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x60); EmitByte(P, 0xC0); }
+STATIC VOID EmitPunpcklwdXmm0Xmm0 (UINT8 **P) { EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x61); EmitByte(P, 0xC0); }
+STATIC VOID EmitPunpckldqXmm0Xmm0 (UINT8 **P) { EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x62); EmitByte(P, 0xC0); }
+STATIC VOID EmitPunpcklqdqXmm0Xmm0 (UINT8 **P) { EmitByte(P, 0x66); EmitByte(P, 0x0F); EmitByte(P, 0x6C); EmitByte(P, 0xC0); }
+
+// XORPS XMM0, XMM0  (zero)
+STATIC VOID EmitXorpsXmm0Xmm0 (UINT8 **P) { EmitByte(P, 0x0F); EmitByte(P, 0x57); EmitByte(P, 0xC0); }
 
 // =========== Prologue / Epilogue ===========
 STATIC UINTN EmitPrologue (UINT8 **P) {
@@ -255,29 +697,295 @@ STATIC VOID PatchJcc (UINT8 **Slots, UINT8 *Targets, UINTN Num, UINT8 *End, UINT
 }
 
 //
-// Emit an ARM64 conditional branch decision:
-//   mov rax, Fallthrough; mov [rbx+PC], rax   — default: branch NOT taken
-//   mov al, [rbx+PSTATE+3]                    — byte holds N=0x80, Z=0x40, C=0x01 (V never set)
-//   <TEST AL, mask; Jcc_slot>...              — each Jcc fires when the branch is NOT taken,
-//                                                jumping over the Target store (to End), or
-//                                                straight to the Target store when the first
-//                                                flag already decides "taken" (TgtStart)
-//   mov rax, Target; mov [rbx+PC], rax        — overwrite when branch is taken
+// Emit a decision on ARM condition Cond using the PSTATE byte already
+// loaded into AL (N=0x80 Z=0x40 C=0x01; V is assumed clear, matching the
+// boot kernel's usage): jumps to *Lfalse when Cond is FALSE, falls through
+// when TRUE.  Uses EmitJccSlot so *Lfalse is patchable; internal skip
+// labels are patched to local targets.
 //
-// NOTE: PSTATE is loaded into AL only AFTER the Fallthrough store, since
-// EmitMovImm clobbers RAX (and therefore AL).
+STATIC VOID EmitCondTrueFromPstate (UINT8 **P, UINT32 Cond, UINT8 **Lfalse) {
+  UINT8 *Skip = NULL;
+  UINT8  NoTargets[1] = { 0 };
+
+  switch (Cond) {
+    case 0:   EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x40);   // EQ  — TEST AL, Z
+              EmitJccSlot(P, 0x74, Lfalse); break;
+    case 1:   EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x40);   // NE
+              EmitJccSlot(P, 0x75, Lfalse); break;
+    case 2:   EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x01);   // CS  — TEST AL, C
+              EmitJccSlot(P, 0x74, Lfalse); break;
+    case 3:   EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x01);   // CC
+              EmitJccSlot(P, 0x75, Lfalse); break;
+    case 4:   EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x80);   // MI  — TEST AL, N
+              EmitJccSlot(P, 0x74, Lfalse); break;
+    case 5:   EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x80);   // PL
+              EmitJccSlot(P, 0x75, Lfalse); break;
+    case 6:   EmitJccSlot(P, 0xEB, Lfalse); break;                       // VS — never taken
+    case 7:   break;                                                     // VC — always taken
+    case 8:   EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x01);   // HI  — C && !Z
+              EmitJccSlot(P, 0x74, Lfalse);
+              EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x40);
+              EmitJccSlot(P, 0x75, Lfalse); break;
+    case 9:   EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x01);   // LS  — !C || Z
+              EmitJccSlot(P, 0x74, &Skip);                               // C=0 -> true
+              EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x40);
+              EmitJccSlot(P, 0x74, Lfalse); break;                       // C=1 && Z=0 -> false
+    case 0xA: EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x80);   // GE  — !N (V=0)
+              EmitJccSlot(P, 0x75, Lfalse); break;
+    case 0xB: EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x80);   // LT  — N
+              EmitJccSlot(P, 0x74, Lfalse); break;
+    case 0xC: EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x40);   // GT  — !Z && !N
+              EmitJccSlot(P, 0x75, Lfalse);
+              EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x80);
+              EmitJccSlot(P, 0x75, Lfalse); break;
+    case 0xD: EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x40);   // LE  — Z || N
+              EmitJccSlot(P, 0x75, &Skip);
+              EmitByte(P, 0xF6); EmitByte(P, 0xC0); EmitByte(P, 0x80);
+              EmitJccSlot(P, 0x75, &Skip);
+              EmitJccSlot(P, 0xEB, Lfalse); break;                       // Z=0 && N=0 -> false
+    case 0xE: break;                                                     // AL — always taken
+    default:  EmitJccSlot(P, 0xEB, Lfalse); break;                       // NV — never taken
+  }
+
+  if (Skip != NULL) {
+    PatchJcc (&Skip, NoTargets, 1, *P, *P);
+  }
+}
+
+// Set the x86 flags to the CCMP false-path NZCV constant (ARM layout
+// N=8 Z=4 C=2 V=1).  Order: OF (add trick), then SF+ZF (mov+test), then CF
+// (cmc); TEST does not modify OF or CF.
+STATIC VOID EmitConstNzcv (UINT8 **P, UINT8 Nzcv) {
+  if ((Nzcv & 1) != 0) {
+    // OF = 1 via 0x8000000000000000 + 0x8000000000000000 overflow
+    EmitRexW(P); EmitByte(P, 0xB8);
+    EmitDword(P, 0); EmitDword(P, 0x80000000U);                          // mov rax, 0x8000000000000000
+    EmitRexW(P); EmitByte(P, 0x05);
+    EmitDword(P, 0); EmitDword(P, 0x80000000U);                          // add rax, 0x8000000000000000
+  }
+  EmitRexW(P); EmitByte(P, 0xB8);                                        // mov rax, imm64
+  EmitDword(P, 0); EmitDword(P, 0);                                      // (patched below)
+  {
+    UINT8 *Patch = *P - 8;
+    UINT64 Val = ((Nzcv & 8) != 0) ? 0x8000000000000000ULL
+                 : (((Nzcv & 4) != 0) ? 0x0ULL : 0x1ULL);
+    *((UINT64 *)Patch) = Val;
+  }
+  EmitRexW(P); EmitByte(P, 0x85); EmitByte(P, 0xC0);                     // test rax, rax -> SF=!N, ZF=Z
+  if ((Nzcv & 2) != 0) {
+    EmitByte(P, 0xF8);                                                   // clc -> CF=0 (ARM C=1)
+  } else {
+    EmitByte(P, 0xF9);                                                   // stc -> CF=1 (ARM C=0)
+  }
+}
+
+//
+// Recompute the NZCV flags of the recorded setter into the x86 flags.
+// ADDSUB setters re-derive the operands (the result may have clobbered
+// them); LOGICAL setters use TEST on the result, or AND of the operands
+// for the XZR comparison forms.  CCMP setters first evaluate their gate
+// condition from the previous setter (or PSTATE) and then either compare
+// or materialize the constant NZCV.
+//
+STATIC VOID EmitComputeFlagsFromSet (UINT8 **Q, DBT_FLAG_SET *Set) {
+  UINT32  RnOff;
+  UINT32  RmOff;
+  UINT8  *Lcmp = NULL;
+  UINT8  *Ldone = NULL;
+  UINT8   NoTargets[1] = { 0 };
+  BOOLEAN IsLogical = (Set->Kind == FLAGKIND_LOGICAL);
+  BOOLEAN Clobbered;
+
+  if (Set->IsCcmp) {
+    UINT8  *Lcmp        = NULL;
+    UINT8  *Lconst      = NULL;
+    UINT8  *LconstStart = NULL;
+    UINT8  *Ldone1      = NULL;
+    UINT8  *Ldone2      = NULL;
+    UINT8  *CmpStart;
+    UINT8   OneTargets[1] = { 1 };
+
+    // Gate condition from the previous setter (recursively) or PSTATE.
+    if (Set->HasPrev && Set->Prev != NULL && Set->Prev->HasSetter) {
+      EmitComputeFlagsFromSet (Q, Set->Prev);
+      EmitJccSlot (Q, CondJccTrue[Set->Cond], &Lcmp);
+      // Gate FALSE: NZCV = constant, then done.
+      EmitConstNzcv (Q, Set->Nzcv);
+      EmitJccSlot (Q, 0xEB, &Ldone1);
+    } else {
+      EmitByte(Q, 0x8A); EmitByte(Q, 0x83); EmitDword(Q, (UINT32)(PstateOff() + 3));
+      // Gate FALSE: jump to the constant (falls through to the compare when
+      // the gate condition holds).
+      EmitCondTrueFromPstate (Q, Set->Cond, &Lconst);
+    }
+    // Gate TRUE: compare the operands.
+    CmpStart = *Q;
+    if (Set->Rn == 31) { EmitMovImm(Q, 0); } else { EmitLoadRax(Q, (UINT32)ArmRegXOff(Set->Rn)); }
+    if (Set->IsW) EmitTrunc32(Q);
+    if (Set->HasReg2) {
+      if (Set->Rm == 31) { EmitMovImm(Q, 0); } else { EmitLoadRcx(Q, (UINT32)ArmRegXOff(Set->Rm)); }
+      if (Set->IsW) { EmitByte(Q, 0x89); EmitByte(Q, 0xC9); }
+      EmitShiftRcx(Q, Set->ShiftKind, Set->ShiftAmt);
+      if (Set->IsSub) { EmitCmpRaxRcx(Q); } else { EmitNegRcx(Q); EmitCmpRaxRcx(Q); EmitByte(Q, 0xF5); }
+    } else if (Set->IsSub) {
+      EmitCmpRaxImm32(Q, (UINT32)Set->Imm);
+    } else {
+      EmitCmpRaxImm32(Q, (UINT32)(-(INT64)Set->Imm));
+      EmitByte(Q, 0xF5);
+    }
+    EmitJccSlot (Q, 0xEB, &Ldone2);
+    if (Lconst != NULL) {
+      LconstStart = *Q;
+      EmitConstNzcv (Q, Set->Nzcv);
+    }
+    if (Lcmp != NULL) {
+      PatchJcc (&Lcmp, OneTargets, 1, *Q, CmpStart);
+    }
+    if (Lconst != NULL) {
+      PatchJcc (&Lconst, OneTargets, 1, *Q, LconstStart);
+    }
+    if (Ldone1 != NULL) {
+      PatchJcc (&Ldone1, NoTargets, 1, *Q, *Q);
+    }
+    if (Ldone2 != NULL) {
+      PatchJcc (&Ldone2, NoTargets, 1, *Q, *Q);
+    }
+    return;
+  }
+
+  // If the setter stored its result into Rn or Rm, the operands are gone and
+  // we must reconstruct them.  For logical setters the result itself gives
+  // exact N/Z (C/V are always clear), so a TEST on Rd suffices whenever the
+  // result was stored; only the comparison forms (Rd == XZR) re-read
+  // operands.  For add/sub, Z/N also equal the result's, but C/V need the
+  // original operands: when Rd == Rn (Rd == XZR stores nothing and leaves
+  // the operands intact), rebuild A = R -+ B from the result, then CMP.
+  // W-form setters use 32-bit operations so N/V/C are computed on 32-bit
+  // semantics.
+  if (IsLogical) {
+    Clobbered = FALSE;
+    if (Set->Rd != 31) {
+      EmitLoadRax(Q, (UINT32)ArmRegXOff(Set->Rd));
+      if (Set->IsW) {
+        EmitByte(Q, 0x85); EmitByte(Q, 0xC0);               // TEST EAX, EAX
+      } else {
+        EmitRexW(Q); EmitByte(Q, 0x85); EmitByte(Q, 0xC0);  // TEST RAX, RAX
+      }
+    } else {
+      // Rd == XZR: result discarded; re-read operands (logical: XZR is 31)
+      if (Set->Rn == 31) { EmitMovImm(Q, 0); } else { EmitLoadRax(Q, (UINT32)ArmRegXOff(Set->Rn)); }
+      if (Set->Rm == 31) { EmitMovImm(Q, 0); } else { EmitLoadRcx(Q, (UINT32)ArmRegXOff(Set->Rm)); }
+      EmitShiftRcx(Q, Set->ShiftKind, Set->ShiftAmt);
+      if (Set->IsW) {
+        EmitByte(Q, 0x21); EmitByte(Q, 0xC8);               // AND EAX, ECX
+      } else {
+        EmitAndRaxRcx(Q);
+      }
+    }
+  } else {
+    Clobbered = (Set->Rd != 31) && (Set->Rd == Set->Rn)
+                && (!Set->HasReg2 || (Set->Rm != Set->Rd));
+    if (Set->Rn == 31 && !Clobbered) {
+      RnOff = Set->HasReg2 ? (UINT32)ArmRegXOff(31) : (UINT32)ArmRegSpOff();
+    } else {
+      RnOff = (UINT32)ArmRegXOff(Set->Rn);
+    }
+    RmOff = (UINT32)ArmRegXOff(Set->Rm);
+
+    if (Clobbered) {
+      // Rd == Rn and the result was stored: A = R -+ B, then CMP against B.
+      EmitLoadRax(Q, (UINT32)ArmRegXOff(Set->Rd));
+      if (Set->HasReg2) {
+        if (Set->Rm == 31) { EmitMovImm(Q, 0); } else { EmitLoadRcx(Q, RmOff); }
+        EmitShiftRcx(Q, Set->ShiftKind, Set->ShiftAmt);
+        if (Set->IsSub) {
+          if (Set->IsW) { EmitByte(Q, 0x01); EmitByte(Q, 0xC8); }   // ADD EAX, ECX
+          else { EmitAddRaxRcx(Q); }
+        } else {
+          if (Set->IsW) { EmitByte(Q, 0x29); EmitByte(Q, 0xC8); }   // SUB EAX, ECX
+          else { EmitSubRaxRcx(Q); }
+        }
+      } else if (Set->IsSub) {
+        if (Set->IsW) { EmitByte(Q, 0x05); EmitDword(Q, (UINT32)Set->Imm); }   // ADD EAX, imm32
+        else { EmitAddImm(Q, (UINT32)Set->Imm); }
+      } else {
+        if (Set->IsW) { EmitByte(Q, 0x2D); EmitDword(Q, (UINT32)Set->Imm); }   // SUB EAX, imm32
+        else { EmitSubImm(Q, (UINT32)Set->Imm); }
+      }
+    } else {
+      EmitLoadRax(Q, RnOff);
+    }
+
+    if (Set->HasReg2) {
+      if (Set->Rm == 31) { EmitMovImm(Q, 0); } else { EmitLoadRcx(Q, RmOff); }
+      EmitShiftRcx(Q, Set->ShiftKind, Set->ShiftAmt);
+      if (Set->IsSub) {
+        if (Set->IsW) { EmitByte(Q, 0x39); EmitByte(Q, 0xC8); }   // CMP EAX, ECX
+        else { EmitCmpRaxRcx(Q); }
+      } else {
+        if (Set->IsW) { EmitByte(Q, 0xF7); EmitByte(Q, 0xD9); }   // NEG ECX
+        else { EmitNegRcx(Q); }
+        if (Set->IsW) { EmitByte(Q, 0x39); EmitByte(Q, 0xC8); }
+        else { EmitCmpRaxRcx(Q); }
+        EmitByte(Q, 0xF5);                                       // cmc -> subtract convention
+      }
+    } else if (Set->IsSub) {
+      if (Set->IsW) { EmitByte(Q, 0x3D); EmitDword(Q, (UINT32)Set->Imm); }   // CMP EAX, imm32
+      else { EmitCmpRaxImm32(Q, (UINT32)Set->Imm); }
+    } else {
+      if (Set->IsW) { EmitByte(Q, 0x3D); EmitDword(Q, (UINT32)(-(INT64)Set->Imm)); }
+      else { EmitCmpRaxImm32(Q, (UINT32)(-(INT64)Set->Imm)); }
+      EmitByte(Q, 0xF5);                                       // cmc -> subtract convention
+    }
+  }
+}
+
+//
+// Emit an ARM64 conditional branch decision from the recorded setter:
+//   mov rax, Fallthrough; mov [rbx+PC], rax   — default: branch NOT taken
+//   <flag reconstruction into x86 flags>
+//   Jcc(skip) — fires when NOT taken, jumping over the Target store
+//   mov rax, Target; mov [rbx+PC], rax        — overwrite when taken
+//
+STATIC UINTN EmitCondBranchFromSet (UINT8 **P, UINT32 Cond, UINT64 Target, UINT64 Fallthrough, DBT_FLAG_SET *Set) {
+  UINT8  *Start = *P;
+  UINT8   Seq[256];
+  UINT8  *Q   = Seq;
+  UINT8  *Ldone = NULL;
+  UINT8   NoTargets[1] = { 0 };
+
+  EmitMovImm(&Q, Fallthrough);
+  EmitStoreRax(&Q, (UINT32)ArmRegPcOff());
+
+  EmitComputeFlagsFromSet (&Q, Set);
+
+  EmitJccSlot(&Q, CondJccFalse[Cond], &Ldone);
+
+  EmitMovImm(&Q, Target);
+  EmitStoreRax(&Q, (UINT32)ArmRegPcOff());
+
+  PatchJcc (&Ldone, NoTargets, 1, Q, Q);
+
+  CopyMem (*P, Seq, (UINTN)(Q - Seq));
+  *P += (UINTN)(Q - Seq);
+  return (UINTN)(*P - Start);
+}
+
+//
+// Emit an ARM64 conditional branch decision from the PSTATE byte (no flag
+// setter in the current block):
+//   mov rax, Fallthrough; mov [rbx+PC], rax   — default: branch NOT taken
+//   mov al, [rbx+PSTATE+3]                    — N=0x80, Z=0x40, C=0x01
+//   <TEST AL, mask; Jcc>...                   — jump over the Target store
+//                                              when the branch is NOT taken
+//   mov rax, Target; mov [rbx+PC], rax        — overwrite when taken
 //
 STATIC UINTN EmitCondBranch (UINT8 **P, UINT32 Cond, UINT64 Target, UINT64 Fallthrough) {
   UINT8  *Start = *P;
   UINT8   Seq[64];
   UINT8  *Q   = Seq;
-  UINT8  *Slots[3];
-  UINT8   Mask[3] = { 0, 0, 0 };
-  UINT8   Jcc[3]  = { 0, 0, 0 };
-  UINT8   Targets[3] = { 0, 0, 0 };
-  UINTN   Num = 1;
-  UINTN   I;
-  UINT8  *TgtStart;
+  UINT8  *Ldone = NULL;
+  UINT8   NoTargets[1] = { 0 };
 
   EmitMovImm(&Q, Fallthrough);
   EmitStoreRax(&Q, (UINT32)ArmRegPcOff());
@@ -285,41 +993,12 @@ STATIC UINTN EmitCondBranch (UINT8 **P, UINT32 Cond, UINT64 Target, UINT64 Fallt
   // mov al, [rbx+PSTATE+3]
   EmitByte(&Q, 0x8A); EmitByte(&Q, 0x83); EmitDword(&Q, (UINT32)(PstateOff() + 3));
 
-  switch (Cond) {
-    case 0:   Mask[0] = 0x40; Jcc[0] = 0x74; break;                 // EQ  — skip when !Z (ZF=1)
-    case 1:   Mask[0] = 0x40; Jcc[0] = 0x75; break;                 // NE  — skip when Z (ZF=0)
-    case 2:   Mask[0] = 0x01; Jcc[0] = 0x74; break;                 // CS  — skip when !C (ZF=1)
-    case 3:   Mask[0] = 0x01; Jcc[0] = 0x75; break;                 // CC  — skip when C (ZF=0)
-    case 4:   Mask[0] = 0x80; Jcc[0] = 0x74; break;                 // MI  — skip when !N (ZF=1)
-    case 5:   Mask[0] = 0x80; Jcc[0] = 0x75; break;                 // PL  — skip when N (ZF=0)
-    case 6:   Mask[0] = 0x00; Jcc[0] = 0xEB; break;                 // VS  — never taken, always skip
-    case 7:   Num = 0;         break;                               // VC  — always taken
-    case 8:   Mask[0] = 0x40; Jcc[0] = 0x75;                       // HI  — skip when !C or Z
-              Mask[1] = 0x01; Jcc[1] = 0x74; Num = 2; break;
-    case 9:   Mask[0] = 0x40; Jcc[0] = 0x75; Targets[0] = 1;      // LS  — first flag decides taken
-              Mask[1] = 0x01; Jcc[1] = 0x75; Num = 2; break;       //       (Z=1 -> taken, jump to Target)
-    case 0xA: Mask[0] = 0x80; Jcc[0] = 0x75; break;                 // GE  — skip when N (ZF=0)
-    case 0xB: Mask[0] = 0x80; Jcc[0] = 0x74; break;                 // LT  — skip when !N (ZF=1)
-    case 0xC: Mask[0] = 0x40; Jcc[0] = 0x75;                       // GT  — skip when Z or N
-              Mask[1] = 0x80; Jcc[1] = 0x75; Num = 2; break;
-    case 0xD: Mask[0] = 0x40; Jcc[0] = 0x75; Targets[0] = 1;      // LE  — first flag decides taken
-              Mask[1] = 0x80; Jcc[1] = 0x74; Num = 2; break;       //       (Z=1 -> taken, jump to Target)
-    case 0xE: Num = 0;         break;                               // AL
-    default:  Mask[0] = 0x00; Jcc[0] = 0xEB; break;                 // NV  — never taken, always skip
-  }
+  EmitCondTrueFromPstate (&Q, Cond, &Ldone);
 
-  for (I = 0; I < Num; I++) {
-    if (Mask[I] != 0) {
-      EmitByte(&Q, 0xF6); EmitByte(&Q, 0xC0); EmitByte(&Q, Mask[I]);  // TEST AL, imm8
-    }
-    EmitJccSlot(&Q, Jcc[I], &Slots[I]);
-  }
-
-  TgtStart = Q;
   EmitMovImm(&Q, Target);
   EmitStoreRax(&Q, (UINT32)ArmRegPcOff());
 
-  PatchJcc (Slots, Targets, Num, Q, TgtStart);
+  PatchJcc (&Ldone, NoTargets, 1, Q, Q);
 
   CopyMem (*P, Seq, (UINTN)(Q - Seq));
   *P += (UINTN)(Q - Seq);
@@ -393,7 +1072,10 @@ STATIC VOID EmitRecordFlagSet (
   IN UINT8        Rn,
   IN UINT8        Rm,
   IN BOOLEAN      HasReg2,
-  IN UINT64       Imm
+  IN UINT64       Imm,
+  IN UINT8        ShiftKind,
+  IN UINT8        ShiftAmt,
+  IN BOOLEAN      IsW
   )
 {
   Ctx->FlagSet.HasSetter = TRUE;
@@ -405,6 +1087,57 @@ STATIC VOID EmitRecordFlagSet (
   Ctx->FlagSet.Rm        = Rm;
   Ctx->FlagSet.HasReg2   = HasReg2;
   Ctx->FlagSet.Imm       = Imm;
+  Ctx->FlagSet.ShiftKind = ShiftKind;
+  Ctx->FlagSet.ShiftAmt  = ShiftAmt;
+  Ctx->FlagSet.IsW       = IsW;
+  Ctx->FlagSet.IsCcmp    = FALSE;
+  Ctx->FlagSet.HasPrev   = FALSE;
+}
+
+//
+// Record a CCMP/CCMN as the flag setter: its flags are the compare result
+// when Cond holds against the previous setter's flags, or the constant
+// NZCV otherwise.  Prev is the setter recorded before it, so same-block
+// consumers can re-derive both paths.
+//
+STATIC VOID EmitRecordCcmp (
+  IN DBT_CONTEXT *Ctx,
+  IN BOOLEAN      IsSub,
+  IN UINT8        Rd,
+  IN UINT8        Rn,
+  IN UINT8        Rm,
+  IN BOOLEAN      HasReg2,
+  IN UINT64       Imm,
+  IN UINT8        ShiftKind,
+  IN UINT8        ShiftAmt,
+  IN BOOLEAN      IsW,
+  IN UINT8        Cond,
+  IN UINT8        Nzcv
+  )
+{
+  if (Ctx->PrevCount < 8 && Ctx->FlagSet.HasSetter) {
+    Ctx->PrevSlots[Ctx->PrevCount] = Ctx->FlagSet;
+    Ctx->FlagSet.Prev = &Ctx->PrevSlots[Ctx->PrevCount++];
+    Ctx->FlagSet.HasPrev = TRUE;
+  } else {
+    Ctx->FlagSet.Prev = NULL;
+    Ctx->FlagSet.HasPrev = FALSE;
+  }
+  Ctx->FlagSet.HasSetter  = TRUE;
+  Ctx->FlagSet.Kind       = FLAGKIND_ADDSUB;
+  Ctx->FlagSet.IsSub      = IsSub;
+  Ctx->FlagSet.LogicalOp  = 0;
+  Ctx->FlagSet.Rd         = Rd;
+  Ctx->FlagSet.Rn         = Rn;
+  Ctx->FlagSet.Rm         = Rm;
+  Ctx->FlagSet.HasReg2    = HasReg2;
+  Ctx->FlagSet.Imm        = Imm;
+  Ctx->FlagSet.ShiftKind  = ShiftKind;
+  Ctx->FlagSet.ShiftAmt   = ShiftAmt;
+  Ctx->FlagSet.IsW        = IsW;
+  Ctx->FlagSet.IsCcmp     = TRUE;
+  Ctx->FlagSet.Cond       = Cond;
+  Ctx->FlagSet.Nzcv       = Nzcv;
 }
 
 //
@@ -419,139 +1152,63 @@ STATIC VOID EmitRecordFlagSet (
 //                ADD: CMP RAX, -imm32
 //   logical:     AND/ORR/EOR RAX, [RBX+RmOff]      — flags = (Rn op Rm) result
 //
-STATIC UINTN EmitCondBranchFromSet (UINT8 **P, UINT32 Cond, UINT64 Target, UINT64 Fallthrough, DBT_FLAG_SET *Set) {
-  UINT8  *Start = *P;
-  UINT8   Seq[128];
-  UINT8  *Q   = Seq;
-  UINT8  *Slots[3];
-  UINT8   Jcc[3]  = { 0, 0, 0 };
-  UINT8   Targets[3] = { 0, 0, 0 };
-  UINTN   Num = 1;
-  UINTN   I;
-  UINT8  *TgtStart;
-  UINT32  RnOff;
-  UINT32  RmOff;
-  BOOLEAN IsLogical = (Set->Kind == FLAGKIND_LOGICAL);
-  BOOLEAN Clobbered;
-
-  EmitMovImm(&Q, Fallthrough);
-  EmitStoreRax(&Q, (UINT32)ArmRegPcOff());
-
-  // If the setter stored its result into Rn or Rm, the operands are gone and
-  // we must reconstruct them.  For logical setters the result itself gives
-  // exact N/Z (C/V are always clear), so a TEST on Rd suffices whenever the
-  // result was stored; only the comparison forms (Rd == XZR) re-read
-  // operands.  For add/sub, Z/N also equal the result's, but C/V need the
-  // original operands: when Rd == Rn (Rd == XZR stores nothing and leaves
-  // the operands intact), rebuild A = R -+ B from the result, then CMP.
-  if (IsLogical) {
-    Clobbered = FALSE;
-    if (Set->Rd != 31) {
-      EmitLoadRax(&Q, (UINT32)ArmRegXOff(Set->Rd));
-      EmitRexW(&Q); EmitByte(&Q, 0x85); EmitByte(&Q, 0xC0);  // TEST RAX, RAX
-    } else {
-      // Rd == XZR: result discarded; re-read operands (logical: XZR is 31)
-      EmitLoadRax(&Q, (UINT32)ArmRegXOff(Set->Rn));
-      EmitAndRaxMem(&Q, (UINT32)ArmRegXOff(Set->Rm));
-    }
-  } else {
-    Clobbered = (Set->Rd != 31) && (Set->Rd == Set->Rn)
-                && (!Set->HasReg2 || (Set->Rm != Set->Rd));
-    if (Set->Rn == 31 && !Clobbered) {
-      RnOff = Set->HasReg2 ? (UINT32)ArmRegXOff(31) : (UINT32)ArmRegSpOff();
-    } else {
-      RnOff = (UINT32)ArmRegXOff(Set->Rn);
-    }
-    RmOff = (UINT32)ArmRegXOff(Set->Rm);
-
-    if (Clobbered) {
-      // Rd == Rn and the result was stored: A = R -+ B, then CMP against B.
-      EmitLoadRax(&Q, (UINT32)ArmRegXOff(Set->Rd));
-      if (Set->HasReg2) {
-        if (Set->IsSub) { EmitAddRaxMem(&Q, RmOff); } else { EmitSubRaxMem(&Q, RmOff); }
-      } else if (Set->IsSub) {
-        EmitAddImm(&Q, (UINT32)Set->Imm);
-      } else {
-        EmitSubImm(&Q, (UINT32)Set->Imm);
-      }
-    } else {
-      EmitLoadRax(&Q, RnOff);
-    }
-
-    if (Set->HasReg2) {
-      if (Set->IsSub) {
-        EmitCmpRaxMem(&Q, RmOff);
-      } else {
-        EmitLoadRcx(&Q, RmOff);
-        EmitNegRcx(&Q);
-        EmitCmpRaxRcx(&Q);
-      }
-    } else if (Set->IsSub) {
-      EmitCmpRaxImm32(&Q, (UINT32)Set->Imm);
-    } else {
-      EmitCmpRaxImm32(&Q, (UINT32)(-(INT64)Set->Imm));
-    }
-  }
-
-  // Jcc slots: each fires when the branch is NOT taken, jumping over the
-  // Target store; a Targets[I]=1 entry jumps straight to TgtStart instead
-  // (the first flag already decided "taken").  For logical setters C and V
-  // are always clear, so CS/HI/VS never take and CC/LS/VC always take.
+// Host-side condition evaluation against a PSTATE-format flags byte
+// (N=0x80, Z=0x40, V=0x10, C=0x01).  Returns TRUE when Cond holds.
+STATIC BOOLEAN CondHolds (UINT32 Cond, UINT8 F) {
   switch (Cond) {
-    case 0:   Jcc[0] = 0x75; break;                                  // EQ  — skip when ZF=0
-    case 1:   Jcc[0] = 0x74; break;                                  // NE  — skip when ZF=1
-    case 2:   Jcc[0] = IsLogical ? 0xEB : 0x72; break;               // CS  — skip when CF=1 (logical: never taken)
-    case 3:   Jcc[0] = IsLogical ? 0x00 : 0x73; Num = IsLogical ? 0 : 1; break;  // CC  — skip when CF=0 (logical: always taken)
-    case 4:   Jcc[0] = 0x79; break;                                  // MI  — skip when SF=0
-    case 5:   Jcc[0] = 0x78; break;                                  // PL  — skip when SF=1
-    case 6:   Jcc[0] = IsLogical ? 0xEB : 0x71; break;               // VS  — skip when OF=1 (logical: never taken)
-    case 7:   Num = 0; break;                                        // VC  — always taken
-    case 8:   Jcc[0] = IsLogical ? 0xEB : 0x72;                      // HI  — skip when CF=1 or ZF=1 (logical: never taken)
-              Jcc[1] = 0x74; Num = IsLogical ? 1 : 2; break;
-    case 9:   if (IsLogical) { Num = 0; }                            // LS  — logical: always taken
-              else { Jcc[0] = 0x74; Targets[0] = 1;                  // ZF=1 -> taken
-                     Jcc[1] = 0x73; Num = 2; }                       // CF=1 -> taken, else skip
-              break;
-    case 0xA: Jcc[0] = 0x7C; break;                                  // GE  — skip when N!=V (SF!=OF)
-    case 0xB: Jcc[0] = 0x7D; break;                                  // LT  — skip when N==V
-    case 0xC: Jcc[0] = 0x74;                                        // GT  — skip when ZF=1 or N!=V
-              Jcc[1] = 0x7C; Num = 2; break;
-    case 0xD: Jcc[0] = 0x74; Targets[0] = 1;                        // LE  — ZF=1 -> taken
-              Jcc[1] = 0x7D; Num = 2; break;                         //       N==V -> taken, else skip
-    case 0xE: Num = 0; break;                                        // AL
-    default:  Jcc[0] = 0xEB; break;                                  // NV  — never taken, always skip
+    case 0:   return (F & 0x40) != 0;
+    case 1:   return (F & 0x40) == 0;
+    case 2:   return (F & 0x01) != 0;
+    case 3:   return (F & 0x01) == 0;
+    case 4:   return (F & 0x80) != 0;
+    case 5:   return (F & 0x80) == 0;
+    case 6:   return FALSE;
+    case 7:   return TRUE;
+    case 8:   return (F & 0x01) != 0 && (F & 0x40) == 0;
+    case 9:   return (F & 0x01) == 0 || (F & 0x40) != 0;
+    case 0xA: return ((F & 0x80) != 0) == ((F & 0x10) != 0);  // GE: N==V
+    case 0xB: return ((F & 0x80) != 0) != ((F & 0x10) != 0);  // LT: N!=V
+    case 0xC: return (F & 0x40) == 0 && ((F & 0x80) != 0) == ((F & 0x10) != 0);  // GT
+    case 0xD: return (F & 0x40) != 0 || ((F & 0x80) != 0) != ((F & 0x10) != 0);  // LE
+    case 0xE: return TRUE;
+    default:  return FALSE;
   }
+}
 
-  for (I = 0; I < Num; I++) {
-    EmitJccSlot(&Q, Jcc[I], &Slots[I]);
-  }
-
-  TgtStart = Q;
-  EmitMovImm(&Q, Target);
-  EmitStoreRax(&Q, (UINT32)ArmRegPcOff());
-
-  PatchJcc (Slots, Targets, Num, Q, TgtStart);
-
-  CopyMem (*P, Seq, (UINTN)(Q - Seq));
-  *P += (UINTN)(Q - Seq);
-  return (UINTN)(*P - Start);
+// Convert an ARM-layout NZCV immediate (N=8 Z=4 C=2 V=1) to the PSTATE
+// byte layout (N=0x80 Z=0x40 V=0x10 C=0x01).
+STATIC UINT8 NzcvToPstate (UINT8 Nzcv) {
+  UINT8 Byte = 0;
+  Byte |= (Nzcv & 8) ? 0x80 : 0;
+  Byte |= (Nzcv & 4) ? 0x40 : 0;
+  Byte |= (Nzcv & 2) ? 0x01 : 0;
+  Byte |= (Nzcv & 1) ? 0x10 : 0;
+  return Byte;
 }
 
 //
-// Recompute NZCV from the recorded flag setter's operands and the current
-// register state, and store it into PSTATE[31:24].  Called after each block
-// runs, so that consumers in later blocks read the PSTATE byte.  The ARM
-// PSTATE byte layout is: N=0x80, Z=0x40, V=0x10, C=0x01 (C complemented for
-// subtract: ARM C means "no borrow").
+// Compute NZCV for one flag set (recursively for CCMP) and return it as a
+// PSTATE-format flags byte.
 //
-STATIC VOID DbtComputeNzcv (IN DBT_CONTEXT *Ctx) {
-  DBT_FLAG_SET *S   = &Ctx->FlagSet;
-  UINT64        A, B, R;
+STATIC UINT8 DbtComputeNzcvSet (IN DBT_CONTEXT *Ctx, IN DBT_FLAG_SET *S) {
+  UINT64        A, B, R, W;
   UINT8         Byte;
   BOOLEAN       N, Z, C, V;
+  UINT8         PrevByte;
+  BOOLEAN       CondTrue;
 
   if (!S->HasSetter) {
-    return;
+    return 0;
+  }
+
+  if (S->IsCcmp) {
+    // Gate condition from the previous setter's flags (or the PSTATE byte);
+    // the false path substitutes the constant NZCV.
+    PrevByte = (S->HasPrev && S->Prev != NULL) ? DbtComputeNzcvSet (Ctx, S->Prev) : (UINT8)(Ctx->ArmState.PSTATE >> 24);
+    CondTrue = CondHolds (S->Cond, PrevByte);
+    if (!CondTrue) {
+      return NzcvToPstate (S->Nzcv);
+    }
   }
 
   // Rn==31 is SP in the immediate form, XZR in the register form.
@@ -562,8 +1219,19 @@ STATIC VOID DbtComputeNzcv (IN DBT_CONTEXT *Ctx) {
   }
   if (S->HasReg2) {
     B = Ctx->ArmState.X[S->Rm];
+    switch (S->ShiftKind) {
+      case 1:  B = (S->ShiftAmt == 64) ? 0 : (B << S->ShiftAmt); break;
+      case 2:  B = (S->ShiftAmt == 64) ? 0 : (B >> S->ShiftAmt); break;
+      case 3:  B = (S->ShiftAmt == 64) ? (B >> 63) : ((INT64)B >> S->ShiftAmt); break;
+      default: break;
+    }
   } else {
     B = S->Imm;
+  }
+
+  if (S->IsW) {
+    A &= 0xFFFFFFFFULL;
+    B &= 0xFFFFFFFFULL;
   }
 
   if (S->Kind == FLAGKIND_LOGICAL) {
@@ -584,13 +1252,45 @@ STATIC VOID DbtComputeNzcv (IN DBT_CONTEXT *Ctx) {
     V = ((((A ^ B) & ((UINT64)1 << 63)) == 0) && (((A ^ R) & ((UINT64)1 << 63)) != 0));
   }
 
-  N = ((R & ((UINT64)1 << 63)) != 0);
+  if (S->IsW) {
+    R &= 0xFFFFFFFFULL;
+    N = ((R & 0x80000000ULL) != 0);
+    if (S->Kind != FLAGKIND_LOGICAL) {
+      // V on a 32-bit result: overflow of the low 32 bits
+      UINT64 W = S->IsSub ? (A - B) : (A + B);
+      V = S->IsSub
+          ? ((((A ^ B) & 0x80000000ULL) != 0) && (((A ^ W) & 0x80000000ULL) != 0))
+          : (((((A ^ B) & 0x80000000ULL) == 0) && (((A ^ W) & 0x80000000ULL) != 0)));
+    }
+  } else {
+    N = ((R & ((UINT64)1 << 63)) != 0);
+  }
   Z = (R == 0);
 
   Byte  = N ? 0x80 : 0;
   Byte |= Z ? 0x40 : 0;
   Byte |= V ? 0x10 : 0;
   Byte |= C ? 0x01 : 0;
+
+  return Byte;
+}
+
+//
+// Recompute NZCV from the recorded flag setter's operands and the current
+// register state, and store it into PSTATE[31:24].  Called after each block
+// runs, so that consumers in later blocks read the PSTATE byte.  The ARM
+// PSTATE byte layout is: N=0x80, Z=0x40, V=0x10, C=0x01 (C complemented for
+// subtract: ARM C means "no borrow").
+//
+STATIC VOID DbtComputeNzcv (IN DBT_CONTEXT *Ctx) {
+  DBT_FLAG_SET *S   = &Ctx->FlagSet;
+  UINT8         Byte;
+
+  if (!S->HasSetter) {
+    return;
+  }
+
+  Byte = DbtComputeNzcvSet (Ctx, S);
 
   Ctx->ArmState.PSTATE = (Ctx->ArmState.PSTATE & 0x00FFFFFFULL) | ((UINT64)Byte << 24);
 
@@ -635,25 +1335,187 @@ STATIC UINTN DbtTranslateOne (
     UINT32 Sub = (Inst >> 23) & 7;
 
     if (Sub == 5) {
-      // MOVZ / MOVN / MOVK
-      UINT32 Hw  = (Inst >> 21) & 3;
-      UINT16 Imm = (Inst >> 5) & 0xFFFF;
-      UINT32 Opc = (Inst >> 29) & 3;
+      // MOVZ / MOVN / MOVK: opc(30:29) 0=MOVN 1=reserved 2=MOVZ 3=MOVK
+      UINT32 Hw   = (Inst >> 21) & 3;
+      UINT16 Imm  = (Inst >> 5) & 0xFFFF;
+      UINT32 Opc  = (Inst >> 29) & 3;
+      UINT64 Shift = (UINT64)16 * Hw;
 
-      if (Opc == 2) {
-        // MOVZ
-        UINT64 Val = (UINT64)Imm << (16 * Hw);
-        DBG((DEBUG_INFO, "DBT_ASM:    MOVZ X%d, #0x%llx\n", Rd, Val));
+      if (Opc == 2 || Opc == 0) {
+        // MOVZ / MOVN
+        UINT64 Val;
+        if (Opc == 2) {
+          Val = (UINT64)Imm << Shift;
+        } else {
+          Val = ~((UINT64)Imm << Shift);
+          if (((Inst >> 31) & 1) == 0) {
+            Val &= 0xFFFFFFFF;   // W-form: 32-bit result
+          }
+        }
+        DBG((DEBUG_INFO, "DBT_ASM:    MOV%s X%d, #0x%llx\n", Opc == 2 ? "Z" : "N", Rd, Val));
         EmitMovImm(&P, Val);
         EmitStoreRax(&P, RdOff);
+      } else if (Opc == 3) {
+        // MOVK: Rd = (Rd & ~(0xFFFF << shift)) | (Imm << shift)
+        UINT64 Mask = (UINT64)0xFFFF << Shift;
+        DBG((DEBUG_INFO, "DBT_ASM:    MOVK X%d, #0x%x, lsl #%u\n", Rd, Imm, 16 * Hw));
+        EmitLoadRax(&P, RdOff);
+        EmitMovRcxImm(&P, ~Mask);
+        EmitAndRaxRcx(&P);       // RAX = Rd & ~Mask
+        EmitMovRcxImm(&P, (UINT64)Imm << Shift);
+        EmitOrRaxRcx(&P);        // RAX = (Rd & ~Mask) | (Imm << shift)
+        if (((Inst >> 31) & 1) == 0) {
+          EmitTrunc32(&P);
+        }
+        EmitStoreRax(&P, RdOff);
       } else {
-        DBG((DEBUG_INFO, "DBT_ASM:    MOVK/MOVN (unsupported) -> NOP\n"));
+        DBG((DEBUG_INFO, "DBT_ASM:    MOV wide opc=%u -> NOP\n", Opc));
         EmitNop(&P);
       }
+    } else if (Sub == 4) {
+      //
+      // Logical (immediate): AND/ORR/EOR/ANDS.  sf(31) opc(30:29)
+      // 100100(28:23) N(22) immr(21:16) imms(15:10) Rn(9:5) Rd(4:0)
+      //
+      UINT32  Opc    = (Inst >> 29) & 3;
+      UINT64  Mask, Unused;
+      BOOLEAN Sf     = (Inst >> 31) & 1;
+      BOOLEAN Ok     = Arm64DecodeBitMasks(Inst, TRUE, &Mask, &Unused);
+
+      if (!Ok || (!Sf && (((Inst >> 22) & 1) != 0))) {
+        DBG((DEBUG_INFO, "DBT_ASM:    Logical imm (N=%u imms=%u) UNALLOCATED -> NOP\n",
+             (Inst >> 22) & 1, (Inst >> 10) & 0x3F));
+        EmitNop(&P);
+      } else {
+        if (!Sf) {
+          Mask &= 0xFFFFFFFF;
+        }
+        DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, X%d, #0x%llx\n",
+             Opc == 0 ? "AND" : Opc == 1 ? "ORR" : Opc == 2 ? "EOR" : "ANDS",
+             Sf ? "" : "W", Rd, Rn, Mask));
+
+        EmitMovRcxImm(&P, Mask);
+        EmitLoadRax(&P, RnOff);
+        if (Opc == 0) {
+          EmitAndRaxRcx(&P);
+        } else if (Opc == 1) {
+          EmitOrRaxRcx(&P);
+        } else if (Opc == 2) {
+          EmitXorRaxRcx(&P);
+        } else {
+          EmitAndRaxRcx(&P);
+          if (Rd != 31) {
+            EmitStoreRax(&P, RdOff);
+          }
+          EmitRecordFlagSet(Ctx, FLAGKIND_LOGICAL, FALSE, 0, Rd, Rn, 0, TRUE, 0, 0, 0, !Sf);
+        }
+        if (Opc != 3 && Rd != 31) {
+          EmitStoreRax(&P, RdOff);
+        }
+      }
     } else if (Sub == 6 || Sub == 7) {
-      // Bitfield
-      DBG((DEBUG_INFO, "DBT_ASM:    Bitfield -> NOP\n"));
-      EmitNop(&P);
+      //
+      // Bitfield: sf(31) opc(30:29) 100110/100111(28:23) N(22)
+      // immr(21:16) Rm(20:16, EXTR only) imms(15:10) Rn(9:5) Rd(4:0)
+      //   Sub==6 (100110): opc 0=SBFM, opc 2=UBFM
+      //   Sub==7 (100111): opc 0=EXTR, opc 1=BFM
+      //
+      UINT32  Opc    = (Inst >> 29) & 3;
+      UINT32  N      = (Inst >> 22) & 1;
+      UINT32  Immr   = (Inst >> 16) & 0x3F;
+      UINT32  Imms   = (Inst >> 10) & 0x3F;
+      BOOLEAN Sf     = (Inst >> 31) & 1;
+      UINT64  Wmask, Tmask;
+      BOOLEAN IsExtr = (Sub == 7 && Opc == 0);
+
+      if (Sf ? (N != 1) : (N != 0 || Immr >= 0x20 || Imms >= 0x20)) {
+        DBG((DEBUG_INFO, "DBT_ASM:    Bitfield N=%u immr=%u imms=%u UNALLOCATED -> NOP\n",
+             N, Immr, Imms));
+        EmitNop(&P);
+      } else if (IsExtr) {
+        // Xd = concat(Xn : Xm)<lsb+datasize-1 : lsb>
+        UINT8  Rm8  = (Inst >> 16) & 0x1F;
+        UINT32 Lsb  = Imms;
+        UINTN  RmOff = ArmRegXOff(Rm8);
+        DBG((DEBUG_INFO, "DBT_ASM:    EXTR%s X%d, X%d, X%d, #%u\n",
+             Sf ? "" : "W", Rd, Rn, Rm8, Lsb));
+        if (Lsb == 0) {
+          EmitLoadRax(&P, RnOff);
+        } else {
+          EmitLoadRax(&P, RnOff);
+          if (!Sf) { EmitTrunc32(&P); }
+          EmitShrRaxImm(&P, (UINT8)Lsb);           // Xn >> lsb
+          EmitLoadRcx(&P, RmOff);
+          if (!Sf) { EmitTrunc32(&P); }            // W: clear upper 32
+          EmitShlRcxImm(&P, (UINT8)(Sf ? 64 - Lsb : 32 - Lsb)); // Xm << (size-lsb)
+          EmitOrRaxRcx(&P);
+        }
+        if (!Sf) { EmitTrunc32(&P); }
+        EmitStoreRax(&P, RdOff);
+      } else {
+        //
+        // SBFM (opc 0, Sub 6), UBFM (opc 2, Sub 6), BFM (opc 1, Sub 7)
+        //
+        BOOLEAN IsSbfm = (Sub == 6 && Opc == 0);
+        BOOLEAN IsBfm  = (Sub == 6 && Opc == 1);
+        BOOLEAN IsUbfm = (Sub == 6 && Opc == 2);
+        UINT32  W;
+
+        if (!(IsSbfm || IsUbfm || IsBfm) ||
+            (((Inst >> 22) & 1) != (UINT32)Sf) ||
+            !Arm64DecodeBitMasks(Inst, FALSE, &Wmask, &Tmask)) {
+          DBG((DEBUG_INFO, "DBT_ASM:    Bitfield opc=%u sub=%u N=%u sf=%u UNALLOCATED -> NOP\n",
+               Opc, Sub, (Inst >> 22) & 1, Sf));
+          EmitNop(&P);
+        } else if (IsSbfm) {
+          // bot = ROR(Rn, immr) & wmask; msb = (S - R) mod esize
+          // Xd = (top & ~tmask) | (bot & tmask), top = replicate(bot[msb])
+          UINT32 Msb = (Imms - Immr) & ((Sf ? 64 : 32) - 1);
+          DBG((DEBUG_INFO, "DBT_ASM:    SBFM%s X%d, X%d, #%u, #%u\n",
+               Sf ? "" : "W", Rd, Rn, Immr, Imms));
+          EmitLoadRax(&P, RnOff);
+          if (Immr) { EmitRorRaxImm(&P, (UINT8)Immr); }
+          EmitMovRcxImm(&P, Wmask);
+          EmitAndRaxRcx(&P);                       // RAX = bot
+          EmitBitTestRax(&P, (UINT8)Msb);          // CF = bot<msb>
+          EmitSbbRdxRdx(&P);                       // RDX = 0 or all-ones
+          EmitMovRcxImm(&P, ~Tmask);
+          EmitAndRdxRcx(&P);                       // RDX = top & ~tmask
+          EmitMovRcxImm(&P, Tmask);
+          EmitAndRaxRcx(&P);                       // RAX = bot & tmask
+          EmitOrRaxRdx(&P);                        // RAX = (bot & tmask) | (top & ~tmask)
+          if (!Sf) { EmitTrunc32(&P); }
+          EmitStoreRax(&P, RdOff);
+        } else if (IsUbfm) {
+          // Xd = ROR(Rn, immr) & wmask & tmask
+          DBG((DEBUG_INFO, "DBT_ASM:    UBFM%s X%d, X%d, #%u, #%u\n",
+               Sf ? "" : "W", Rd, Rn, Immr, Imms));
+          EmitLoadRax(&P, RnOff);
+          if (Immr) { EmitRorRaxImm(&P, (UINT8)Immr); }
+          EmitMovRcxImm(&P, Wmask & Tmask);
+          EmitAndRaxRcx(&P);
+          if (!Sf) { EmitTrunc32(&P); }
+          EmitStoreRax(&P, RdOff);
+        } else {
+          // BFM: W = wmask & tmask
+          //      Xd = (Rd & ~W) | (ROR(Rn, immr) & W)
+          W = (UINT32)(Wmask & Tmask);
+          DBG((DEBUG_INFO, "DBT_ASM:    BFM%s X%d, X%d, #%u, #%u\n",
+               Sf ? "" : "W", Rd, Rn, Immr, Imms));
+          EmitLoadRax(&P, RdOff);
+          EmitByte(&P, 0x50);                      // PUSH Rd
+          EmitLoadRax(&P, RnOff);
+          if (Immr) { EmitRorRaxImm(&P, (UINT8)Immr); }
+          EmitMovRcxImm(&P, Wmask & Tmask);
+          EmitAndRaxRcx(&P);                       // RAX = ROR & W
+          EmitMovRcxImm(&P, ~((UINT64)(Wmask & Tmask)));
+          EmitByte(&P, 0x5A);                      // POP RDX (Rd)
+          EmitAndRdxRcx(&P);                       // RDX = Rd & ~W
+          EmitOrRaxRdx(&P);                        // RAX = bot
+          if (!Sf) { EmitTrunc32(&P); }
+          EmitStoreRax(&P, RdOff);
+        }
+      }
     } else if (Sub == 2) {
       //
       // ADD/SUB immediate: sf(31) op(30) S(29) 100010(28:23) sh(22) imm12(21:10)
@@ -662,6 +1524,7 @@ STATIC UINTN DbtTranslateOne (
       UINT32   Imm      = ((Inst >> 10) & 0xFFF) << (Sh ? 12 : 0);
       BOOLEAN  IsSub    = (Inst >> 30) & 1;
       BOOLEAN  SetFlags = (Inst >> 29) & 1;
+      BOOLEAN  IsW      = ((Inst >> 31) & 1) == 0;
 
       DBG((DEBUG_INFO, "DBT_ASM:    %s X%d, X%d, #0x%x%s\n",
                IsSub ? "SUB" : "ADD", Rd, Rn, Imm, SetFlags ? " (flags)" : ""));
@@ -672,19 +1535,35 @@ STATIC UINTN DbtTranslateOne (
         EmitLoadRax(&P, SrcOff);
         if (IsSub) { EmitSubImm(&P, Imm); }
         else       { EmitAddImm(&P, Imm); }
+        if (IsW) EmitTrunc32(&P);
         if (Rd == 31) {
           EmitNop(&P); // discard result
         } else {
           EmitStoreRax(&P, RdOff);
         }
-        if (SetFlags) EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, 0, FALSE, Imm);
+        if (SetFlags) EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, 0, FALSE, Imm, 0, 0, IsW);
       } else {
         EmitLoadRax(&P, RnOff);
         if (IsSub) { EmitSubImm(&P, Imm); }
         else       { EmitAddImm(&P, Imm); }
+        if (IsW) EmitTrunc32(&P);
         if (Rd != 31) EmitStoreRax(&P, RdOff);
-        if (SetFlags) EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, 0, FALSE, Imm);
+        if (SetFlags) EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, 0, FALSE, Imm, 0, 0, IsW);
       }
+    } else if (Sub == 0 || Sub == 1) {
+      //
+      // ADR / ADRP.  Note bit 23 is immhi bit 20, so both Sub==0 and
+      // Sub==1 land here: sf(31) immlo(30:29) 10000(28:24) immhi(23:5) Rd(4:0)
+      //
+      BOOLEAN IsAdrp = (Inst >> 31) & 1;
+      INT64   Imm    = ((Inst >> 5) & 0x7FFFF) << 2;      // immhi << 2
+      Imm           |= (Inst >> 29) & 3;                  // immlo
+      if (Imm & (1LL << 20)) { Imm |= ~((INT64)0x1FFFFF); }  // sign-extend 21
+      INT64   Val    = (INT64)InstAddr + (IsAdrp ? (Imm << 12) : Imm);
+      if (IsAdrp) { Val &= ~((INT64)0xFFF); }             // page of PC
+      DBG((DEBUG_INFO, "DBT_ASM:    ADR%s X%d, 0x%llx\n", IsAdrp ? "P" : "", Rd, Val));
+      EmitMovImm(&P, (UINT64)Val);
+      EmitStoreRax(&P, RdOff);
     } else {
       DBG((DEBUG_INFO, "DBT_ASM:    Unknown immediate -> NOP\n"));
       EmitNop(&P);
@@ -721,102 +1600,241 @@ STATIC UINTN DbtTranslateOne (
     UINT32 Op25 = (Inst >> 25) & 1;
 
     if (Op25 == 0) {
-      // Loads/stores (excluding SIMD)
-      UINT32 Size = (Inst >> 30) & 3;
-      UINT32 Opc2 = (Inst >> 22) & 7;
-      INT32  Imm7 = ((Inst >> 15) & 0x7F) << (Size == 0 ? 0 : Size);  // scale
+      //
+      // LDP/STP register pairs.  Encoding (verified via clang arm64):
+      //   [31:30]=opc (00 = W/S-pair, 10 = X/Q-pair 64-bit elements)
+      //   [29:27]=101 [26]=VR (0 general / 1 SIMD)
+      //   [25:23]=form (001 post-index, 010 signed-offset, 011 pre-index)
+      //   [22]=L (1=load) [21:15]=imm7 (signed, x8 for 64-bit elements)
+      //   [14:10]=Rt2 [9:5]=Rn [4:0]=Rt
+      //
+      UINT32 Size    = (Inst >> 30) & 3;
+      UINT32 Form    = (Inst >> 23) & 7;
+      UINT32 IsLoad  = (Inst >> 22) & 1;
+      INT32  Imm     = (INT32)((Inst >> 15) & 0x7F);
+      if (Imm & 0x40) { Imm |= ~0x7F; }  // sign-extend bit 6
+      Imm <<= 3;                         // scale by element size (8 bytes)
+      UINT8  Rt2     = (Inst >> 10) & 0x1F;
+      UINTN  RnOffP  = (Rn == 31) ? SpOff : RnOff;
 
-      if (Opc2 == 1) {
-        // STR: store Rt to [Rn + offset]
-        DBG((DEBUG_INFO, "DBT_ASM:    STR X%d, [X%d, #%d]\n", Rt, Rn, Imm7));
-        EmitLoadRax(&P, RtOff);           // RAX = value to store
-        EmitLoadRcx(&P, RnOff);           // RCX = base address
-        if (Imm7) { EmitAddRcxImm(&P, (UINT32)Imm7); }  // RCX += offset
-        // MOV [RCX], RAX
-        EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x01);
-      } else if (Opc2 == 3) {
-        // LDR: load Rt from [Rn + offset]
-        DBG((DEBUG_INFO, "DBT_ASM:    LDR X%d, [X%d, #%d]\n", Rt, Rn, Imm7));
-        EmitLoadRcx(&P, RnOff);           // RCX = base address
-        if (Imm7) { EmitAddRcxImm(&P, (UINT32)Imm7); }  // RCX += offset
-        // MOV RAX, [RCX]
-        EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x01);
-        EmitStoreRax(&P, RtOff);          // store to Rt
-      } else if (Opc2 == 2 || Opc2 == 4) {
-        // LDP/STP pair
-        if (Opc2 == 4) {
-          // LDP
-          DBG((DEBUG_INFO, "DBT_ASM:    LDP X%d, X%d, [X%d, #%d]\n", Rt, Rt2, Rn, Imm7));
-          EmitLoadRcx(&P, RnOff);                  // RCX = base
-          if (Imm7) { EmitAddRcxImm(&P, (UINT32)Imm7); }  // RCX += offset
-          // First load: MOV RAX, [RCX]
-          EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x01);
+      if (Size == 2 && (Form == 1 || Form == 2 || Form == 3)) {
+        // Compute guest address into RCX (pre-index also writes it back to Rn)
+        if (Form == 1) {
+          // post-index: address = Rn, writeback happens after the access
+          EmitLoadRcx(&P, RnOffP);
+        } else {
+          EmitLoadRcx(&P, RnOffP);
+          if (Imm) { EmitAddRcxImm(&P, (UINT32)Imm); }
+          if (Form == 3) {
+            // pre-index: Rn = address first
+            EmitStoreRcx(&P, RnOffP);
+          }
+        }
+
+        if (IsLoad) {
+          DBG((DEBUG_INFO, "DBT_ASM:    LDP X%d, X%d, [X%d%s, #%d]%s\n", Rt, Rt2, Rn,
+               Rn == 31 ? "31" : "", Imm, Form == 1 ? "!" : ""));
+          EmitCallMapHelper(&P);                   // RAX = host base
+          EmitByte(&P, 0x50);                      // PUSH host base
+          // First load: MOV RAX, [RAX]
+          EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x00);
           EmitStoreRax(&P, RtOff);
           // Second load at +8: MOV RAX, [RCX+8]
+          EmitByte(&P, 0x59);                      // POP RCX (host base)
           EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x41); EmitByte(&P, 0x08);
-          EmitStoreRax(&P, Rt2Off);
+          EmitStoreRax(&P, ArmRegXOff(Rt2));
         } else {
-          // STP
-          DBG((DEBUG_INFO, "DBT_ASM:    STP X%d, X%d, [X%d, #%d]\n", Rt, Rt2, Rn, Imm7));
-          EmitLoadRcx(&P, RnOff);                  // RCX = base
-          if (Imm7) { EmitAddRcxImm(&P, (UINT32)Imm7); }  // RCX += offset
+          DBG((DEBUG_INFO, "DBT_ASM:    STP X%d, X%d, [X%d%s, #%d]%s\n", Rt, Rt2, Rn,
+               Rn == 31 ? "31" : "", Imm, Form == 1 ? "!" : ""));
+          EmitCallMapHelper(&P);                   // RAX = host base
+          EmitByte(&P, 0x50);                      // PUSH host base
+          EmitLoadRax(&P, ArmRegXOff(Rt2));        // RAX = second value
+          EmitByte(&P, 0x50);                      // PUSH second value
           EmitLoadRax(&P, RtOff);                  // RAX = first value
-          EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x01);  // MOV [RCX], RAX
-          EmitLoadRax(&P, Rt2Off);                 // RAX = second value
-          EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x41); EmitByte(&P, 0x08);  // MOV [RCX+8], RAX
+          EmitByte(&P, 0x50);                      // PUSH first value
+          EmitByte(&P, 0x59);                      // POP RCX (first value)
+          EmitByte(&P, 0x58);                      // POP RAX (second value)
+          EmitByte(&P, 0x5A);                      // POP RDX (host base)
+          // MOV [RDX], RCX   (48 89 0A)
+          EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x0A);
+          // MOV [RDX+8], RAX (48 89 42 08)
+          EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x42); EmitByte(&P, 0x08);
+        }
+
+        if (Form == 1) {
+          // post-index writeback: Rn += Imm
+          EmitLoadRax(&P, RnOffP);
+          EmitAddImm(&P, (UINT32)Imm);
+          EmitStoreRax(&P, RnOffP);
         }
       } else {
-        DBG((DEBUG_INFO, "DBT_ASM:    Load/store (opc2=%d) -> NOP\n", Opc2));
+        DBG((DEBUG_INFO, "DBT_ASM:    Pair (size=%d form=%d L=%d) -> NOP\n", Size, Form, IsLoad));
         EmitNop(&P);
       }
     } else {
       // Data processing register; bit 24 discriminates the families:
-      //   logical (01010):  opc(30:29) 0=AND, 1=ORR, 2=EOR, 3=ANDS
-      //   add/sub (01011):  op(30) S(29) 0=ADD/1=SUB, S sets flags
-      UINT32  Bit24 = (Inst >> 24) & 1;
-      UINT32  Opc   = (Inst >> 29) & 3;
+      //   logical (01010):  opc(30:29) 0=AND 1=ORR 2=EOR 3=ANDS,
+      //                     inv(21) selects BIC/ORN/EON/BICS, shift(23:22)
+      //                     kind and (15:10) amount apply to Rm
+      //   add/sub (01011):  op(30) S(29) 0=ADD/1=SUB, same shift on Rm
+      UINT32   Bit24   = (Inst >> 24) & 1;
+      UINT32   Opc     = (Inst >> 29) & 3;
+      UINT32   Inv     = (Inst >> 21) & 1;
+      UINT32   ShKind  = (Inst >> 22) & 3;   // 0=LSL 1=LSR 2=ASR 3=ROR
+      UINT32   ShAmt   = (Inst >> 10) & 0x3F;
+      BOOLEAN  IsW     = ((Inst >> 31) & 1) == 0;   // sf = 0 -> 32-bit
+      UINT8    ShiftKind = (ShKind == 0) ? 1 : (ShKind == 1) ? 2
+                          : (ShKind == 2) ? 3 : 4;  // helper convention
 
       if (Bit24 == 0) {
-        // AND/ORR/EOR (Opc 0..2) and ANDS (Opc 3)
+        // Logical shifted register (AND/ORR/EOR/ANDS, BIC/ORN/EON/BICS).
+        // Rn == 31 reads XZR (zero), never SP.
+        if (Rn == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, RnOff); }
+        if (IsW) EmitTrunc32(&P);
+        if (Rm == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, RmOff); }
+        if (IsW) { EmitByte(&P, 0x89); EmitByte(&P, 0xC9); }   // MOV ECX, ECX
+        EmitShiftRcx(&P, ShiftKind, (UINT8)ShAmt);
+        if (Inv) EmitNotRcx(&P);
+
         if (Opc == 0) {
-          DBG((DEBUG_INFO, "DBT_ASM:    AND X%d, X%d, X%d\n", Rd, Rn, Rm));
-          EmitLoadRax(&P, RnOff);
-          EmitAndRaxMem(&P, RmOff);
-          if (Rd != 31) EmitStoreRax(&P, RdOff);
+          DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, X%d, X%d%s\n",
+                   Inv ? "BIC" : "AND", IsW ? " (32-bit)" : "", Rd, Rn, Rm,
+                   ShAmt ? " (shift)" : ""));
+          EmitAndRaxRcx(&P);
         } else if (Opc == 1) {
-          DBG((DEBUG_INFO, "DBT_ASM:    ORR X%d, X%d, X%d\n", Rd, Rn, Rm));
-          EmitLoadRax(&P, RnOff);
-          EmitOrRaxMem(&P, RmOff);
-          if (Rd != 31) EmitStoreRax(&P, RdOff);
+          EmitOrRaxRcx(&P);
         } else if (Opc == 2) {
-          DBG((DEBUG_INFO, "DBT_ASM:    EOR X%d, X%d, X%d\n", Rd, Rn, Rm));
-          EmitLoadRax(&P, RnOff);
-          EmitXorRaxMem(&P, RmOff);
-          if (Rd != 31) EmitStoreRax(&P, RdOff);
+          EmitXorRaxRcx(&P);
         } else {
-          // ANDS (always sets flags)
-          DBG((DEBUG_INFO, "DBT_ASM:    ANDS X%d, X%d, X%d (flags)\n", Rd, Rn, Rm));
-          EmitLoadRax(&P, RnOff);
-          EmitAndRaxMem(&P, RmOff);
-          if (Rd != 31) EmitStoreRax(&P, RdOff);
-          EmitRecordFlagSet(Ctx, FLAGKIND_LOGICAL, FALSE, 0, Rd, Rn, Rm, TRUE, 0);
+          EmitAndRaxRcx(&P);   // ANDS / BICS
+        }
+        if (IsW) EmitTrunc32(&P);
+        if (Rd != 31) EmitStoreRax(&P, RdOff);
+        if (Opc == 3) {
+          EmitRecordFlagSet(Ctx, FLAGKIND_LOGICAL, FALSE, 0, Rd, Rn, Rm,
+                            TRUE, 0, ShiftKind, (UINT8)ShAmt, IsW);
         }
       } else {
-        // ADD/SUB register
+        // ADD/SUB shifted register
         BOOLEAN IsSub     = (Inst >> 30) & 1;
         BOOLEAN SetFlags  = (Inst >> 29) & 1;
 
-        DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, X%d, X%d\n",
-                 IsSub ? "SUB" : "ADD", SetFlags ? " (flags)" : "", Rd, Rn, Rm));
+        DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, X%d, X%d%s\n",
+                 IsSub ? "SUB" : "ADD", SetFlags ? " (flags)" : "", Rd, Rn, Rm,
+                 ShAmt ? " (shift)" : ""));
 
-        EmitLoadRax(&P, RnOff);
-        if (IsSub) EmitSubRaxMem(&P, RmOff);
-        else       EmitAddRaxMem(&P, RmOff);
+        if (Rn == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, RnOff); }
+        if (IsW) EmitTrunc32(&P);
+        if (Rm == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, RmOff); }
+        if (IsW) { EmitByte(&P, 0x89); EmitByte(&P, 0xC9); }   // MOV ECX, ECX
+        EmitShiftRcx(&P, ShiftKind, (UINT8)ShAmt);
+        if (IsSub) EmitSubRaxRcx(&P);
+        else       EmitAddRaxRcx(&P);
+        if (IsW) EmitTrunc32(&P);
         if (Rd != 31) EmitStoreRax(&P, RdOff);
-        if (SetFlags) EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, Rm, TRUE, 0);
+        if (SetFlags) {
+          EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, Rm,
+                            TRUE, 0, ShiftKind, (UINT8)ShAmt, IsW);
+        }
       }
     }
     return (UINTN)(P - X86Buf);
+  }
+
+  //
+  // 1101: Conditional select / conditional compare
+  //   [28:21] = 0xD4 -> CSEL family: op(30) S(29)? (discriminated by op2):
+  //       op2=0, op=0: CSEL    op2=0, op=1: CSINV
+  //       op2=1, op=0: CSINC   op2=1, op=1: CSNEG
+  //   [28:21] = 0xD2 -> CCMP/CCMN: op(30)=1 CCMP / 0 CCMN, S(29)=1,
+  //       op2=00 register form, op2=10 immediate (imm5), nzcv = bits[3:0]
+  //
+  if (Op0 == 0xD) {
+    UINT32  Sub  = (Inst >> 21) & 0xFF;
+    UINT32  Sf   = (Inst >> 31) & 1;
+    BOOLEAN IsW  = !Sf;
+    UINT32  Cond = (Inst >> 12) & 0xF;
+
+    if (Sub == 0xD4) {
+      UINT32  Op   = (Inst >> 30) & 1;
+      UINT32  Op2  = (Inst >> 10) & 3;
+      UINT32  Rn   = (Inst >> 5) & 0x1F;
+      UINT8  *Ltrue = NULL;
+      UINT8  *Ldone = NULL;
+      UINT8  *QTrueStart = NULL;
+      UINT8   NoTargets[1] = { 0 };
+      UINT8   OneTargets[1] = { 1 };
+      UINT8   Seq[128];
+      UINT8  *Q = Seq;
+
+      if (Op2 == 0 || Op2 == 1) {
+        BOOLEAN IsInv = (Op == 1);
+        BOOLEAN IsInc = (Op2 == 1);
+
+        DBG((DEBUG_INFO, "DBT_ASM:    %s%s %s%d, %s%d, %s%d, %s%s\n",
+                 IsInv ? (IsInc ? "CSNEG" : "CSINV") : (IsInc ? "CSINC" : "CSEL"),
+                 IsW ? "W" : "X", IsW ? "W" : "X", Rd, IsW ? "W" : "X", Rn,
+                 IsW ? "W" : "X", Rm, CondNames[Cond],
+                 (Rn == 31 && Rm == 31) ? " (cset/cinc alias)" : ""));
+
+        // Default (cond FALSE): Rm, transformed by the op.
+        if (Rm == 31) { EmitMovImm(&Q, 0); } else { EmitLoadRax(&Q, (UINT32)ArmRegXOff(Rm)); }
+        if (IsW) EmitTrunc32(&Q);
+        if (IsInv) { EmitNotRax(&Q); }
+        if (IsInc) { EmitAddImm(&Q, 1); }
+        if (IsW) EmitTrunc32(&Q);
+        if (Rd != 31) EmitStoreRax(&Q, (UINT32)ArmRegXOff(Rd));
+
+        // Condition: recorded setter flags, or the PSTATE byte.
+        if (Ctx->FlagSet.HasSetter) {
+          EmitComputeFlagsFromSet (&Q, &Ctx->FlagSet);
+          EmitJccSlot(&Q, CondJccTrue[Cond], &Ltrue);
+        } else {
+          EmitByte(&Q, 0x8A); EmitByte(&Q, 0x83); EmitDword(&Q, (UINT32)(PstateOff() + 3));
+          EmitCondTrueFromPstate (&Q, Cond, &Ldone);
+          EmitJccSlot(&Q, 0xEB, &Ltrue);
+        }
+        EmitJccSlot(&Q, 0xEB, &Ldone);   // cond FALSE: skip the true value
+
+        // Cond TRUE: Rn (unmodified).
+        QTrueStart = Q;
+        if (Rn == 31) { EmitMovImm(&Q, 0); } else { EmitLoadRax(&Q, (UINT32)ArmRegXOff(Rn)); }
+        if (IsW) EmitTrunc32(&Q);
+        if (Rd != 31) EmitStoreRax(&Q, (UINT32)ArmRegXOff(Rd));
+
+        PatchJcc (&Ltrue, OneTargets, 1, Q, QTrueStart);
+        PatchJcc (&Ldone, NoTargets, 1, Q, Q);
+
+        CopyMem (P, Seq, (UINTN)(Q - Seq));
+        P += (UINTN)(Q - Seq);
+        return (UINTN)(P - X86Buf);
+      } else {
+        DBG((DEBUG_INFO, "DBT_ASM:    CSEL family op2=%u -> NOP\n", Op2));
+        EmitNop(&P);
+        return (UINTN)(P - X86Buf);
+      }
+    } else if (Sub == 0xD2) {
+      // CCMP / CCMN
+      UINT32  Op   = (Inst >> 30) & 1;
+      UINT32  Op2  = (Inst >> 10) & 3;
+      UINT32  Imm  = (Inst >> 16) & 0x1F;
+      UINT32  Nzcv = Inst & 0xF;
+      UINT8   ShiftKind = 0, ShiftAmt = 0;
+
+      DBG((DEBUG_INFO, "DBT_ASM:    %s %s%d, %s%u, #0x%x, %s\n",
+               Op ? "CCMP" : "CCMN", IsW ? "W" : "X", Rn,
+               (Op2 == 0) ? "X" : "#", (UINT32)Imm, Nzcv, CondNames[Cond]));
+
+      // op=1 selects the subtract compare (CCMP), op=0 the add form (CCMN).
+      EmitRecordCcmp (Ctx, (Op == 1), Rd, Rn, (UINT8)Imm, (Op2 == 0), (UINT64)((Op2 == 0) ? 0 : Imm),
+                      ShiftKind, ShiftAmt, IsW, Cond, (UINT8)Nzcv);
+      EmitNop(&P);
+      return (UINTN)(P - X86Buf);
+    } else {
+      DBG((DEBUG_INFO, "DBT_ASM:    op0=d sub=0x%x -> NOP\n", Sub));
+      EmitNop(&P);
+      return (UINTN)(P - X86Buf);
+    }
   }
 
   //
@@ -903,24 +1921,12 @@ STATIC UINTN DbtTranslateOne (
       // BR/BLR/RET are terminators: the pending flag setter cannot be
       // consumed after them (and the block ends), so drop the descriptor.
       Ctx->FlagSet.HasSetter = FALSE;
-    } else {
-      DBG((DEBUG_INFO, "DBT_ASM:    Unhandled branch top=0x%02x -> NOP\n", TopByte));
-      EmitNop(&P);
-    }
-    return (UINTN)(P - X86Buf);
-  }
-
-  //
-  // 0x0C-0x0D (110x): Advanced SIMD/FP loads/stores, or MSR/MRS
-  //
-  if (Op0 == 0xC || Op0 == 0xD) {
-    UINT32 OpByte = (Inst >> 24) & 0xFF;
-
-    if (OpByte == 0xD5) {
+    } else if (TopByte == 0xD5) {
       //
       // MSR / MRS — system register access
       //
-      BOOLEAN IsMsr = (Inst >> 21) & 1;
+      // MRS has bit 21 set (11010101011), MSR has it clear (11010101000).
+      BOOLEAN IsMsr = !((Inst >> 21) & 1);
       UINT32  SysReg = ((Inst >> 5) & 0xFFFF) | (((Inst >> 19) & 0x3) << 14);
 
       // Extract op0/op1/CRn/CRm/op2
@@ -997,16 +2003,16 @@ STATIC UINTN DbtTranslateOne (
         } else if (Op0 == 3 && Op1 == 0 && CRn == 2 && CRm == 1) {
           Off = OFFSET_OF(DBT_ARM64_STATE, TTBR1_EL1);
           DBG((DEBUG_INFO, "DBT_MMU:  MRS X%d, TTBR1_EL1\n", Rt));
-        } else if (Op0 == 3 && Op1 == 0 && CRn == 14 && CRm == 0) {
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 0 && Op2 == 0) {
           Off = OFFSET_OF(DBT_ARM64_STATE, CNTFRQ_EL0);
           DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTFRQ_EL0\n", Rt));
-        } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 0 && Op2 == 1) {
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 0 && Op2 == 2) {
           Off = OFFSET_OF(DBT_ARM64_STATE, CNTVCT_EL0);
           DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTVCT_EL0\n", Rt));
-        } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 3 && Op2 == 1) {
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 3 && Op2 == 2) {
           DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTV_CVAL_EL0\n", Rt));
           Off = OFFSET_OF(DBT_ARM64_STATE, CNTV_CVAL_EL0);
-        } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 3 && Op2 == 0) {
+        } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 3 && Op2 == 1) {
           DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTV_CTL_EL0\n", Rt));
           Off = OFFSET_OF(DBT_ARM64_STATE, CNTV_CTL_EL0);
         } else if (Op0 == 3 && Op1 == 0 && CRn == 12 && CRm == 0) {
@@ -1024,6 +2030,151 @@ STATIC UINTN DbtTranslateOne (
         }
       }
       return (UINTN)(P - X86Buf);
+    } else {
+      DBG((DEBUG_INFO, "DBT_ASM:    Unhandled branch top=0x%02x -> NOP\n", TopByte));
+      EmitNop(&P);
+    }
+    return (UINTN)(P - X86Buf);
+  }
+
+  //
+  // 0x0C-0x0D (110x): Advanced SIMD/FP loads/stores, or MSR/MRS
+  //
+  //
+  // 0x0C-0x0D (110x): LDR/STR family (unsigned-imm12, imm9 pre/post,
+  // LDUR/STUR, register-offset).  0x0D: LDRSW/PRFM (NOP for now).
+  //
+  if (Op0 == 0xC || Op0 == 0xD) {
+    UINT32 Size  = (Inst >> 30) & 3;
+    UINT32 Opc   = (Inst >> 22) & 3;
+    UINT8  Rn    = (Inst >> 5) & 0x1F;
+    UINT8  Rt    = Inst & 0x1F;
+    UINTN  RnOffL = (Rn == 31) ? SpOff : ArmRegXOff(Rn);
+
+    if ((Inst >> 24) & 1) {
+      //
+      // 1111 1001 01xx: LDR/STR unsigned immediate (imm12, scaled by size)
+      // opc: 0=STR, 1=LDR, 2=LDRSW/LDRSB/LDRSH, 3=PRFM; size: 0=B 1=H 2=W 3=X
+      //
+      if (Opc <= 2) {
+        BOOLEAN Sf = (Inst >> 31) & 1;
+        UINT32 Imm = ((Inst >> 10) & 0xFFF) << Size;
+        CONST CHAR8 *Name = Opc == 1 ? "LDR" : Opc == 0 ? "STR" : "LDRS";
+
+        DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, [X%d, #%d]\n", Name,
+             Size == 0 ? "B" : Size == 1 ? "H" : Size == 2 ? "W" : "",
+             Rt, Rn == 31 ? 31 : Rn, Imm));
+        EmitLoadRcx(&P, RnOffL);
+        if (Imm) { EmitAddRcxImm(&P, Imm); }
+        EmitCallMapHelper(&P);                 // RAX = host address
+        EmitMemAccess(&P, Size, Opc, Sf, (UINT32)RtOff);
+      } else {
+        DBG((DEBUG_INFO, "DBT_ASM:    PRFM -> NOP\n"));
+        EmitNop(&P);
+      }
+      return (UINTN)(P - X86Buf);
+    }
+
+    //
+    // LDR literal: opc(31:30) 0=LDRW 1=LDRX 2=LDRSW 3=PRFM, 011000(27:22)
+    // imm19 [23:5] signed, scaled by 4 (by 2 for LDRH literal)
+    //
+    if ((Inst & 0x3B000000) == 0x18000000) {
+      UINT32 LitOpc = (Inst >> 30) & 3;
+      if (LitOpc == 3) {
+        DBG((DEBUG_INFO, "DBT_ASM:    PRFM literal -> NOP\n"));
+        EmitNop(&P);
+      } else {
+        INT64  Imm = ((Inst >> 5) & 0x7FFFF) << 2;
+        if (Imm & (1LL << 20)) { Imm |= ~((INT64)0x1FFFFF); }
+        UINT64 Addr = InstAddr + (UINT64)Imm;
+        DBG((DEBUG_INFO, "DBT_ASM:    LDR%s X%d, =0x%llx\n",
+             LitOpc == 0 ? "W" : LitOpc == 1 ? "" : "SW", Rt, Addr));
+        EmitMovImm(&P, Addr);                    // RAX = literal address
+        EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0xC1);   // MOV RCX, RAX
+        EmitCallMapHelper(&P);                   // RAX = host address
+        if (LitOpc == 2) {
+          EmitRexW(&P); EmitByte(&P, 0x63); EmitByte(&P, 0x00);  // MOVSX RAX, [RAX]
+        } else if (LitOpc == 1) {
+          EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x00);  // MOV RAX, [RAX]
+        } else {
+          EmitByte(&P, 0x8B); EmitByte(&P, 0x00);                // MOV EAX, [RAX]
+        }
+        EmitStoreRax(&P, RtOff);
+      }
+      return (UINTN)(P - X86Buf);
+    }
+
+    if ((Inst >> 21) & 1) {
+      //
+      // 1111 1001 011: LDR/STR (register) — option must be 3 (UXTX)
+      // Rm [20:16], option [15:13], S [12] (S=1 shifts by size)
+      //
+      if (Opc <= 2) {
+        UINT8 Rm   = (Inst >> 16) & 0x1F;
+        UINT8 Opt  = (Inst >> 13) & 7;
+        UINT8 S    = (Inst >> 12) & 1;
+
+        if (Opt == 3) {
+          UINTN RmOff = ArmRegXOff(Rm);
+          DBG((DEBUG_INFO, "DBT_ASM:    %s X%d, [X%d, X%d%s]\n", Opc == 1 ? "LDR" : "STR",
+               Rt, Rn, Rm, S ? ", lsl #3" : ""));
+          EmitLoadRcx(&P, RnOffL);
+          EmitLoadRax(&P, RmOff);
+          if (S) { EmitRexW(&P); EmitByte(&P, 0xC1); EmitByte(&P, 0xE0); EmitByte(&P, 0x03); }  // SHL RAX, 3
+          EmitRexW(&P); EmitByte(&P, 0x01); EmitByte(&P, 0xC1);        // ADD RCX, RAX
+          EmitCallMapHelper(&P);
+          EmitMemAccess(&P, Size, Opc, (Inst >> 31) & 1, (UINT32)RtOff);
+          return (UINTN)(P - X86Buf);
+        }
+        DBG((DEBUG_INFO, "DBT_ASM:    Reg-offset (opc=%d opt=%d) -> NOP\n", Opc, Opt));
+      } else {
+        DBG((DEBUG_INFO, "DBT_ASM:    Reg-offset (opc=%d) -> NOP\n", Opc));
+      }
+      EmitNop(&P);
+      return (UINTN)(P - X86Buf);
+    }
+
+    //
+    // 1111 1001 010: LDUR/STUR (bit23=0) or LDR/STR imm9 pre/post (bit23=1)
+    // imm9 [20:12] signed; pre-index has W[11]=0, post-index W[11]=1
+    //
+    if (Opc <= 2) {
+      INT32  Imm9 = ((INT32)((Inst >> 12) & 0x1FF)) << 23 >> 23;
+      UINT32 IsPost = (Inst >> 11) & 1;
+      CONST CHAR8 *Name = Opc == 1 ? "LDR" : Opc == 0 ? "STR" : "LDRS";
+
+      if ((Inst >> 23) & 1) {
+        // pre/post index
+        DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, [X%d, #%d]%s\n", Name,
+             Size == 0 ? "B" : Size == 1 ? "H" : Size == 2 ? "W" : "",
+             Rt, Rn, Imm9, IsPost ? "!" : ""));
+        EmitLoadRcx(&P, RnOffL);
+        if (Imm9) { EmitAddRcxImm(&P, (UINT32)Imm9); }
+        if (!IsPost) {
+          // pre-index: Rn = address first
+          EmitStoreRcx(&P, RnOffL);
+        }
+        EmitCallMapHelper(&P);
+        EmitMemAccess(&P, Size, Opc, (Inst >> 31) & 1, (UINT32)RtOff);
+        if (IsPost) {
+          // post-index: Rn += Imm9 after the access
+          EmitLoadRax(&P, RnOffL);
+          EmitAddImm(&P, (UINT32)Imm9);
+          EmitStoreRax(&P, RnOffL);
+        }
+        return (UINTN)(P - X86Buf);
+      } else {
+        // LDUR/STUR: unscaled, no writeback
+        DBG((DEBUG_INFO, "DBT_ASM:    LD%s%s X%d, [X%d, #%d]\n",
+             Opc == 1 ? "UR" : "U", Opc == 0 ? "R" : "",
+             Rt, Rn, Imm9));
+        EmitLoadRcx(&P, RnOffL);
+        if (Imm9) { EmitAddRcxImm(&P, (UINT32)Imm9); }
+        EmitCallMapHelper(&P);
+        EmitMemAccess(&P, Size, Opc, (Inst >> 31) & 1, (UINT32)RtOff);
+        return (UINTN)(P - X86Buf);
+      }
     }
 
     // Other 110x instructions — emit NOP with log
@@ -1196,6 +2347,7 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
 
   // Deliver the state pointer to the translated prologue (ABI-agnostic)
   gDbtActiveState = &Ctx->ArmState;
+  gDbtActiveCtx   = Ctx;
 
   // Call translated code with &ArmState as arg (already in RBX from prologue)
   VOID (*Entry)(DBT_ARM64_STATE *) = (VOID(*)(DBT_ARM64_STATE*))Ctx->TranslatedCode;
@@ -1238,6 +2390,7 @@ EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, U
 
   // No flag setter is pending at the start of a block.
   Ctx->FlagSet.HasSetter = FALSE;
+  Ctx->PrevCount = 0;
 
   UINT32 *Inst = (UINT32 *)ArmCode;
   UINT64  Addr = BaseAddr; // Address tracking needed for PC-relative
@@ -1288,25 +2441,56 @@ VOID DbtFreeContext (DBT_CONTEXT *Ctx) {
 //
 
 /**
-  Identity-map VA to PA (MMU is off or TCR_EL1 forces identity).
-  Returns the physical address for a given virtual address.
+  Map a guest virtual address to the host address where the loaded kernel
+  image holds it.  The kernel is linked at its VM addresses (e.g.
+  0xFFFFFE0007004000) but loaded into a firmware pool buffer at a
+  different host address, and the segments are contiguous in both the file
+  and the VA space, so:  host = KernelBuffer + SegFileOff[i] + (Va - SegVmAddr[i]).
+
+  Returns Va unchanged (identity) when no segment contains it; the caller
+  (emitted load/store code) treats the result as a host pointer.
 **/
 UINT64 DbtTranslateVaToPa (DBT_CONTEXT *Ctx, UINT64 Va) {
-  if (!Ctx) return Va;
+  UINTN  I;
 
-  //
-  // If MMU is disabled (SCTLR_EL1.M = 0), use identity mapping
-  //
-  if ((Ctx->ArmState.SCTLR_EL1 & 1) == 0) {
-    DBG((DEBUG_INFO, "DBT_MMU: MMU OFF — VA 0x%llx -> PA 0x%llx (identity)\n", Va, Va));
-    return Va;
+  if (Ctx != NULL) {
+    for (I = 0; I < Ctx->SegCount; I++) {
+      if (Va >= Ctx->SegVmAddr[I] && Va < Ctx->SegVmAddr[I] + Ctx->SegVmSize[I]) {
+        return (UINT64)(UINTN)(Ctx->KernelBuffer
+                               + Ctx->SegFileOff[I]
+                               + (UINTN)(Va - Ctx->SegVmAddr[I]));
+      }
+    }
   }
 
-  //
-  // MMU enabled — walk page tables (stub: identity map for now)
-  //
-  DBG((DEBUG_INFO, "DBT_MMU: MMU ON — identity mapping VA 0x%llx -> PA 0x%llx (stub)\n", Va, Va));
+  DBG((DEBUG_WARN, "DBT_MMU: VA 0x%llx outside image — identity\n", Va));
   return Va;
+}
+
+EFI_STATUS DbtSetSegments (DBT_CONTEXT *Ctx, UINTN SegCount, UINT64 *SegVmAddr,
+                           UINT64 *SegVmSize, UINT64 *SegFileOff, VOID *KernelBuffer) {
+  if (Ctx == NULL || (SegCount != 0 && (SegVmAddr == NULL || SegVmSize == NULL || SegFileOff == NULL || KernelBuffer == NULL))) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  Ctx->SegCount     = SegCount;
+  Ctx->SegVmAddr    = SegVmAddr;
+  Ctx->SegVmSize    = SegVmSize;
+  Ctx->SegFileOff   = SegFileOff;
+  Ctx->KernelBuffer = KernelBuffer;
+
+  DBG((DEBUG_INFO, "DBT_MMU: registered %u segments, kernel buffer 0x%llx\n",
+       SegCount, (UINT64)(UINTN)KernelBuffer));
+  return EFI_SUCCESS;
+}
+
+//
+// Host-side helper invoked by the translated load/store code.  Takes no
+// arguments (reads the globals) so the call is ABI-independent; the
+// translated code preserves RBX and the saved registers across it.
+//
+UINT64 DbtMapHostAddr (VOID) {
+  return DbtTranslateVaToPa (gDbtActiveCtx, gDbtHelperVa);
 }
 
 /**

@@ -1113,6 +1113,22 @@ SKIP_READ_APPLE_KERNEL:
     DEBUG ((DEBUG_INFO, "DirectKernel: %u segments, image base=0x%llx end=0x%llx\n",
             SegCount, KernelVaBase, KernelVaEnd));
 
+    //
+    // Register the segment table with the DBT context so translated loads
+    // and stores translate guest VAs to host addresses.  Without this the
+    // emitters would dereference the guest VA directly on the x86 host and
+    // the silently swallowed page fault would leave guest registers zeroed
+    // (observed as a CBZ self-spin on the kernel boot path).
+    //
+    if (EFI_ERROR (DbtSetSegments (gDbtContext, SegCount, SegVmAddr, SegVmSize,
+                                   SegFileOff, KernelBuffer))) {
+      DEBUG ((DEBUG_ERROR, "DirectKernel: DbtSetSegments failed\n"));
+      FreePool (StackBuffer);
+      FreePool (BootArgs);
+      FreePool (KernelBuffer);
+      return EFI_INVALID_PARAMETER;
+    }
+
     for (Steps = 0;
          Steps < MaxSteps &&
          ArmContext.PC >= KernelVaBase &&

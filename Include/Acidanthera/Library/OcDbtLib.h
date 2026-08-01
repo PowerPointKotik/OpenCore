@@ -71,6 +71,16 @@ DbtSetBootInfo (
   IN CONST CHAR16 *KernelPath
   );
 
+EFI_STATUS
+DbtSetSegments (
+  IN DBT_CONTEXT  *Context,
+  IN UINTN         SegCount,
+  IN UINT64       *SegVmAddr,
+  IN UINT64       *SegVmSize,
+  IN UINT64       *SegFileOff,
+  IN VOID         *KernelBuffer
+  );
+
 EFI_HANDLE
 DbtGetInstallerDevice (
   IN DBT_CONTEXT  *Context
