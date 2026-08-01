@@ -924,9 +924,10 @@ SKIP_READ_APPLE_KERNEL:
     }
   } else {
     //
-    // For ARM64 kernels, extract entry point from thread state
-    // arm_thread_state64_t: x0-x28 (29) + fp + sp + pc + cpsr = 32 UINT64 values
-    // Flavor(4) + Count(4) + 32*8 = PC at offset 0x108 (index 31 in UINT64 array after flavor/count)
+    // For ARM64 kernels, extract entry point from thread state.
+    // LC_UNIXTHREAD is cmd(4) + cmdsize(4) + flavor(4) + count(4) + state[],
+    // where state is an arm_thread_state64_t: x0-x28, fp, lr, sp, pc, cpsr.
+    // PC is UINT64 index 32 of the state.
     //
     Header64 = (MACH_HEADER_64 *)KernelBuffer;
     EntryPoint = 0;
@@ -934,30 +935,35 @@ SKIP_READ_APPLE_KERNEL:
 
     for (Index = 0; Index < Header64->NumCommands; ++Index) {
       if (Cmd->CommandType == MACH_LOAD_COMMAND_UNIX_THREAD) {
-        DEBUG ((DEBUG_INFO, "DirectKernel: Found LC_UNIXTHREAD at index %u\n", Index));
+        UINT32  *Triple;
+        UINT32   Remaining;
         UINT32   Flavor;
         UINT32   Count;
-        UINT64   *ThreadState;
 
-        ThreadState = (UINT64 *)((UINTN)Cmd + sizeof (MACH_THREAD_COMMAND));
-
-        // Verify we have flavor and count
-        if ((UINTN)&ThreadState[2] > (UINTN)KernelBuffer + KernelSize) {
-          break;
-        }
-        Flavor = *((UINT32 *)ThreadState);
-        Count = *((UINT32 *)((UINTN)ThreadState + 4));
-
-        DEBUG ((DEBUG_INFO, "DirectKernel: LC_UNIXTHREAD flavor=%u count=%u\n", Flavor, Count));
-
-        // Skip flavor and count to get to actual thread state values
-        ThreadState = (UINT64 *)((UINTN)ThreadState + 8);
-
-        // ARM64_THREAD_STATE: flavor=6, PC at index 32
-        if (Flavor == ARM64_THREAD_STATE_FLAVOR && Count >= 34) {
-          if ((UINTN)&ThreadState[32] <= (UINTN)KernelBuffer + KernelSize) {
-            EntryPoint = ThreadState[32];
+        DEBUG ((DEBUG_INFO, "DirectKernel: Found LC_UNIXTHREAD at index %u\n", Index));
+        //
+        // LC_UNIXTHREAD: cmd(4) + cmdsize(4) + repeated triples of
+        // flavor(4) + count(4) + state[count].  arm_thread_state64_t is
+        // x0-x28, fp, lr, sp, pc, cpsr = 34 UINT64s, PC at UINT64 index 32,
+        // so a full state needs 68 UINT32s.
+        //
+        Triple    = (UINT32 *)((UINTN)Cmd + 8);
+        Remaining = Cmd->CommandSize - 8;
+        while (Remaining >= 8) {
+          Flavor = Triple[0];
+          Count  = Triple[1];
+          DEBUG ((DEBUG_INFO, "DirectKernel: LC_UNIXTHREAD flavor=%u count=%u\n", Flavor, Count));
+          if (Flavor == ARM64_THREAD_STATE_FLAVOR && Count >= 66) {
+            if ((UINTN)Triple + 8 + 33 * sizeof (UINT64) <= (UINTN)KernelBuffer + KernelSize) {
+              EntryPoint = *((UINT64 *)((UINTN)Triple + 8 + 32 * sizeof (UINT64)));
+            }
+            break;
           }
+          if (Remaining < 8 + Count * 4) {
+            break;
+          }
+          Triple    += 2 + Count;
+          Remaining -= 8 + Count * 4;
         }
         break;
       } else if (Cmd->CommandType == 0x80000028U) {  // LC_MAIN
