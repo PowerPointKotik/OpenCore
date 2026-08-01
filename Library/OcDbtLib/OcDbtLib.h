@@ -10,5 +10,7 @@ typedef struct DBT_CONTEXT {
   VOID            *TranslatedCode;
   UINTN            TranslatedSize;
   UINTN            CodeCapacity;
+  UINT8           *JumpSlot;
+  UINT8           *LastBlockStart;
   UINT8            CodeBuffer[0];
 } DBT_CONTEXT;

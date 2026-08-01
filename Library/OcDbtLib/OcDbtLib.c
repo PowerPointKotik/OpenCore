@@ -34,6 +34,11 @@ STATIC UINT8  Arm64Rm  (UINT32 Inst) { return (Inst >> 16) & 0x1F; }
 STATIC UINT8  Arm64Rt  (UINT32 Inst) { return Inst & 0x1F; }
 STATIC UINT8  Arm64Rt2 (UINT32 Inst) { return (Inst >> 10) & 0x1F; }
 
+STATIC CONST CHAR8 *CondNames[16] = {
+  "EQ", "NE", "CS", "CC", "MI", "PL", "VS", "VC",
+  "HI", "LS", "GE", "LT", "GT", "LE", "AL", "NV"
+};
+
 //
 // ARM64 register offset in DBT_ARM64_STATE
 //
@@ -201,6 +206,139 @@ STATIC UINTN EmitEpilogue (UINT8 **P) {
   EmitByte(P, 0xC9);
   // ret
   EmitByte(P, 0xC3);
+  return (UINTN)(*P - Start);
+}
+
+// JCC/JMP rel8 placeholder — patched later by PatchJcc
+STATIC VOID EmitJccSlot (UINT8 **P, UINT8 Opcode, UINT8 **Slot) {
+  *Slot = *P;
+  EmitByte(P, Opcode);
+  EmitByte(P, 0);
+}
+
+STATIC VOID PatchJcc (UINT8 **Slots, UINT8 *Targets, UINTN Num, UINT8 *End, UINT8 *TgtStart) {
+  UINTN  I;
+
+  for (I = 0; I < Num; I++) {
+    UINT8 *To = (Targets[I] != 0) ? TgtStart : End;
+
+    Slots[I][1] = (UINT8)(To - (Slots[I] + 2));
+  }
+}
+
+//
+// Emit an ARM64 conditional branch decision:
+//   mov rax, Fallthrough; mov [rbx+PC], rax   — default: branch NOT taken
+//   mov al, [rbx+PSTATE+3]                    — byte holds N=0x80, Z=0x40, C=0x01 (V never set)
+//   <TEST AL, mask; Jcc_slot>...              — each Jcc fires when the branch is NOT taken,
+//                                                jumping over the Target store (to End), or
+//                                                straight to the Target store when the first
+//                                                flag already decides "taken" (TgtStart)
+//   mov rax, Target; mov [rbx+PC], rax        — overwrite when branch is taken
+//
+// NOTE: PSTATE is loaded into AL only AFTER the Fallthrough store, since
+// EmitMovImm clobbers RAX (and therefore AL).
+//
+STATIC UINTN EmitCondBranch (UINT8 **P, UINT32 Cond, UINT64 Target, UINT64 Fallthrough) {
+  UINT8  *Start = *P;
+  UINT8   Seq[64];
+  UINT8  *Q   = Seq;
+  UINT8  *Slots[3];
+  UINT8   Mask[3] = { 0, 0, 0 };
+  UINT8   Jcc[3]  = { 0, 0, 0 };
+  UINT8   Targets[3] = { 0, 0, 0 };
+  UINTN   Num = 1;
+  UINTN   I;
+  UINT8  *TgtStart;
+
+  EmitMovImm(&Q, Fallthrough);
+  EmitStoreRax(&Q, (UINT32)ArmRegPcOff());
+
+  // mov al, [rbx+PSTATE+3]
+  EmitByte(&Q, 0x8A); EmitByte(&Q, 0x83); EmitDword(&Q, (UINT32)(PstateOff() + 3));
+
+  switch (Cond) {
+    case 0:   Mask[0] = 0x40; Jcc[0] = 0x74; break;                 // EQ  — skip when !Z (ZF=1)
+    case 1:   Mask[0] = 0x40; Jcc[0] = 0x75; break;                 // NE  — skip when Z (ZF=0)
+    case 2:   Mask[0] = 0x01; Jcc[0] = 0x74; break;                 // CS  — skip when !C (ZF=1)
+    case 3:   Mask[0] = 0x01; Jcc[0] = 0x75; break;                 // CC  — skip when C (ZF=0)
+    case 4:   Mask[0] = 0x80; Jcc[0] = 0x74; break;                 // MI  — skip when !N (ZF=1)
+    case 5:   Mask[0] = 0x80; Jcc[0] = 0x75; break;                 // PL  — skip when N (ZF=0)
+    case 6:   Mask[0] = 0x00; Jcc[0] = 0xEB; break;                 // VS  — never taken, always skip
+    case 7:   Num = 0;         break;                               // VC  — always taken
+    case 8:   Mask[0] = 0x40; Jcc[0] = 0x75;                       // HI  — skip when !C or Z
+              Mask[1] = 0x01; Jcc[1] = 0x74; Num = 2; break;
+    case 9:   Mask[0] = 0x40; Jcc[0] = 0x75; Targets[0] = 1;      // LS  — first flag decides taken
+              Mask[1] = 0x01; Jcc[1] = 0x75; Num = 2; break;       //       (Z=1 -> taken, jump to Target)
+    case 0xA: Mask[0] = 0x80; Jcc[0] = 0x75; break;                 // GE  — skip when N (ZF=0)
+    case 0xB: Mask[0] = 0x80; Jcc[0] = 0x74; break;                 // LT  — skip when !N (ZF=1)
+    case 0xC: Mask[0] = 0x40; Jcc[0] = 0x75;                       // GT  — skip when Z or N
+              Mask[1] = 0x80; Jcc[1] = 0x75; Num = 2; break;
+    case 0xD: Mask[0] = 0x40; Jcc[0] = 0x75; Targets[0] = 1;      // LE  — first flag decides taken
+              Mask[1] = 0x80; Jcc[1] = 0x74; Num = 2; break;       //       (Z=1 -> taken, jump to Target)
+    case 0xE: Num = 0;         break;                               // AL
+    default:  Mask[0] = 0x00; Jcc[0] = 0xEB; break;                 // NV  — never taken, always skip
+  }
+
+  for (I = 0; I < Num; I++) {
+    if (Mask[I] != 0) {
+      EmitByte(&Q, 0xF6); EmitByte(&Q, 0xC0); EmitByte(&Q, Mask[I]);  // TEST AL, imm8
+    }
+    EmitJccSlot(&Q, Jcc[I], &Slots[I]);
+  }
+
+  TgtStart = Q;
+  EmitMovImm(&Q, Target);
+  EmitStoreRax(&Q, (UINT32)ArmRegPcOff());
+
+  PatchJcc (Slots, Targets, Num, Q, TgtStart);
+
+  CopyMem (*P, Seq, (UINTN)(Q - Seq));
+  *P += (UINTN)(Q - Seq);
+  return (UINTN)(*P - Start);
+}
+
+//
+// CBZ/CBNZ: load Rt into RAX, TEST RAX,RAX, then PC-select.
+// Emit Fallthrough store first (branch NOT taken), then the SkipJcc fires when
+// the branch is NOT taken (CBZ: JNE, CBNZ: JE), jumping over the Target store.
+//
+STATIC UINTN EmitCompareBranch (UINT8 **P, UINTN RtOff, UINT64 Target, UINT64 Fallthrough, UINT8 SkipJcc) {
+  UINT8  *Start = *P;
+  UINT8  *Slot;
+
+  EmitLoadRax(P, (UINT32)RtOff);
+  EmitRexW(P); EmitByte(P, 0x85); EmitByte(P, 0xC0);  // TEST RAX, RAX
+
+  EmitMovImm(P, Fallthrough);
+  EmitStoreRax(P, (UINT32)ArmRegPcOff());
+  EmitJccSlot(P, SkipJcc, &Slot);
+  EmitMovImm(P, Target);
+  EmitStoreRax(P, (UINT32)ArmRegPcOff());
+  Slot[1] = (UINT8)((*P) - (Slot + 2));
+
+  return (UINTN)(*P - Start);
+}
+
+//
+// TBZ/TBNZ: load Rt into RAX, BT RAX,RCX, then PC-select.
+// SkipJcc fires when the branch is NOT taken (TBZ: JC, TBNZ: JNC).
+//
+STATIC UINTN EmitTestBitBranch (UINT8 **P, UINTN RtOff, UINT32 Bit, UINT64 Target, UINT64 Fallthrough, UINT8 SkipJcc) {
+  UINT8  *Start = *P;
+  UINT8  *Slot;
+
+  EmitLoadRax(P, (UINT32)RtOff);
+  EmitByte(P, 0xB9); EmitDword(P, Bit);               // MOV ECX, imm32
+  EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0xA3); EmitByte(P, 0xC8);  // BT RAX, RCX
+
+  EmitMovImm(P, Fallthrough);
+  EmitStoreRax(P, (UINT32)ArmRegPcOff());
+  EmitJccSlot(P, SkipJcc, &Slot);
+  EmitMovImm(P, Target);
+  EmitStoreRax(P, (UINT32)ArmRegPcOff());
+  Slot[1] = (UINT8)((*P) - (Slot + 2));
+
   return (UINTN)(*P - Start);
 }
 
@@ -444,22 +582,50 @@ STATIC UINTN DbtTranslateOne (
   // 101x: Branches, exception, system
   //
   if (Op0 >= 0xA && Op0 <= 0xB) {
-    UINT32 High3 = (Inst >> 25) & 7;
+    UINT32 TopByte = (Inst >> 24) & 0xFF;
 
-    if (High3 == 2 || High3 == 1) {
+    if (TopByte == 0x54) {
       // Conditional branch (B.cond)
-      UINT32 Cond = Inst & 0xF;
-      DBG((DEBUG_INFO, "DBT_ASM:    B.COND 0x%x (condition %u) -> NOP\n", Cond, Cond));
-      EmitNop(&P);
-    } else if (High3 == 4 || High3 == 5) {
-      // Unconditional branch (B)
-      INT64 Off = ((Inst >> 0) & 0x3FFFFFF) << 2;
-      INT64 Target = InstAddr + ((Off << 36) >> 36);  // sign-extend 26-bit
-      DBG((DEBUG_INFO, "DBT_ASM:    B 0x%llx\n", Target));
-      // Update PC
-      EmitMovImm(&P, Target);
+      UINT32 Cond   = Inst & 0xF;
+      INT64  Off    = ((Inst >> 5) & 0x7FFFF) << 2;
+      INT64  Target = InstAddr + ((Off << 43) >> 43);
+
+      DBG((DEBUG_INFO, "DBT_ASM:    B.%s 0x%llx\n", CondNames[Cond], Target));
+      return EmitCondBranch(&P, Cond, (UINT64)Target, InstAddr + 4);
+    } else if ((Inst & 0x7C000000) == 0x14000000) {
+      // Unconditional branch B / BL
+      INT64  Off    = ((Inst >> 5) & 0x3FFFFFF) << 2;
+      INT64  Target = InstAddr + ((Off << 36) >> 36);  // sign-extend 26-bit
+      BOOLEAN WithLink = ((Inst >> 31) & 1) != 0;
+
+      if (WithLink) {
+        DBG((DEBUG_INFO, "DBT_ASM:    BL 0x%llx\n", Target));
+        // Save return address (PC+4) to LR (X30)
+        EmitMovImm(&P, InstAddr + 4);
+        EmitStoreRax(&P, ArmRegXOff(30));
+      } else {
+        DBG((DEBUG_INFO, "DBT_ASM:    B 0x%llx\n", Target));
+      }
+      EmitMovImm(&P, (UINT64)Target);
       EmitStoreRax(&P, PcOff);
-    } else if (High3 == 6 || High3 == 7) {
+    } else if ((Inst & 0x7E000000) == 0x34000000) {
+      // CBZ / CBNZ
+      INT64  Off    = ((Inst >> 5) & 0x7FFFF) << 2;
+      INT64  Target = InstAddr + ((Off << 43) >> 43);
+      BOOLEAN NonZero = (Inst >> 24) & 1;
+
+      DBG((DEBUG_INFO, "DBT_ASM:    CB%s X%d, 0x%llx\n", NonZero ? "NZ" : "Z", Rt, Target));
+      return EmitCompareBranch(&P, RtOff, (UINT64)Target, InstAddr + 4, NonZero ? 0x74 : 0x75);
+    } else if ((Inst & 0x7E000000) == 0x36000000) {
+      // TBZ / TBNZ
+      UINT32 Bit   = (((Inst >> 31) & 1) << 5) | ((Inst >> 19) & 0x1F);
+      INT64  Off   = ((Inst >> 5) & 0x3FFF) << 2;
+      INT64  Target = InstAddr + ((Off << 48) >> 48);  // sign-extend 14-bit
+      BOOLEAN NonZero = (Inst >> 24) & 1;
+
+      DBG((DEBUG_INFO, "DBT_ASM:    TB%s X%d, #%u, 0x%llx\n", NonZero ? "NZ" : "Z", Rt, Bit, Target));
+      return EmitTestBitBranch(&P, RtOff, Bit, (UINT64)Target, InstAddr + 4, NonZero ? 0x73 : 0x72);
+    } else if ((Inst & 0xFE000000) == 0xD6000000) {
       // BR, BLR, RET
       UINT32 OpcR = (Inst >> 21) & 7;
 
@@ -486,19 +652,8 @@ STATIC UINTN DbtTranslateOne (
         DBG((DEBUG_INFO, "DBT_ASM:    Unknown branch reg -> NOP\n"));
         EmitNop(&P);
       }
-    } else if (High3 == 0) {
-      // CBZ / CBNZ
-      INT64  Off    = ((Inst >> 5) & 0x7FFFF) << 2;
-      INT64  Target = InstAddr + ((Off << 43) >> 43);
-      BOOLEAN NonZero = (Inst >> 24) & 1;
-
-      DBG((DEBUG_INFO, "DBT_ASM:    CB%s X%d, 0x%llx\n", NonZero ? "NZ" : "Z", Rt, Target));
-      EmitLoadRax(&P, RtOff);
-      EmitRexW(&P); EmitByte(&P, 0x85); EmitByte(&P, 0xC0);  // TEST RAX, RAX
-      // If condition matches, branch to target
-      // Simplified: just update PC if taken (no actual jump in generated code)
-      EmitNop(&P); // TODO: conditional branch
     } else {
+      DBG((DEBUG_INFO, "DBT_ASM:    Unhandled branch top=0x%02x -> NOP\n", TopByte));
       EmitNop(&P);
     }
     return (UINTN)(P - X86Buf);
@@ -761,7 +916,7 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
   DBG((DEBUG_INFO, "DBT: Execute done — PC=0x%llx\n", ArmState->PC));
 }
 
-EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, VOID *X86Code) {
+EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, UINT64 BaseAddr, VOID *X86Code) {
   if (!Ctx) return EFI_INVALID_PARAMETER;
 
   UINT8 *Buf  = X86Code ? (UINT8 *)X86Code : (UINT8 *)Ctx->TranslatedCode + Ctx->TranslatedSize;
@@ -774,10 +929,20 @@ EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, V
   if (Ctx->TranslatedSize == 0 && !X86Code) {
     UINTN ProSize = EmitPrologue(&Buf);
     DBG((DEBUG_INFO, "DBT: Prologue %u bytes\n", ProSize));
+    //
+    // Reserve a jump slot after the prologue: E9 rel32.  Each new block
+    // re-points it at the newest block, so DbtExecute only runs the latest
+    // translation instead of replaying the whole buffer.
+    //
+    Ctx->JumpSlot = Buf;
+    EmitByte(&Buf, 0xE9); EmitDword(&Buf, 0);
+    DBG((DEBUG_INFO, "DBT: Jump slot at %p\n", Ctx->JumpSlot));
   }
 
+  Ctx->LastBlockStart = Buf;
+
   UINT32 *Inst = (UINT32 *)ArmCode;
-  UINT64  Addr = 0; // Address tracking needed for PC-relative
+  UINT64  Addr = BaseAddr; // Address tracking needed for PC-relative
   UINTN   Count = 0;
   UINTN   Remaining = CodeSize / 4;
 
@@ -796,6 +961,16 @@ EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, V
   }
 
   Ctx->TranslatedSize = (UINTN)(Buf - (UINT8 *)Ctx->TranslatedCode);
+
+  if (!X86Code && Ctx->JumpSlot != NULL) {
+    //
+    // Point the jump slot at the newest block.  rel32 is measured from the
+    // end of the JMP instruction.
+    //
+    INTN Rel = (INTN)(Ctx->LastBlockStart - (Ctx->JumpSlot + 5));
+    *(INT32 *)Ctx->JumpSlot = (INT32)Rel;
+    DBG((DEBUG_INFO, "DBT: Jump slot -> %p (rel 0x%x)\n", Ctx->LastBlockStart, (UINT32)Rel));
+  }
 
   DBG((DEBUG_INFO, "DBT: Translated %u instructions, %u x86 bytes\n", Count, Ctx->TranslatedSize));
   return EFI_SUCCESS;

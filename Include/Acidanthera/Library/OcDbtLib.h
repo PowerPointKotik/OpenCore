@@ -106,6 +106,7 @@ DbtTranslateBlock (
   IN OUT DBT_CONTEXT  *Context,
   IN     VOID         *ArmCode,
   IN     UINTN         CodeSize,
+  IN     UINT64        BaseAddr,
   OUT    VOID         *X86Code  OPTIONAL
   );
 
