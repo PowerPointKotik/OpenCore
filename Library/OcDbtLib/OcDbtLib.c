@@ -108,13 +108,6 @@ STATIC VOID EmitXorRaxMem (UINT8 **P, UINT32 Off) {
 }
 
 #if 0  // reserved for future use
-// CMP RAX, [RBX+off] — sets x86 flags
-STATIC VOID EmitCmpRaxMem (UINT8 **P, UINT32 Off) {
-  EmitRexW(P); EmitByte(P, 0x3B);
-  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
-  else { EmitByte(P, 0x83); EmitDword(P, Off); }
-}
-
 STATIC VOID EmitStoreImm (UINT8 **P, UINT32 Off, UINT32 Val) {
   EmitByte(P, 0xC7);
   if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
@@ -157,6 +150,28 @@ STATIC VOID EmitLoadRcx (UINT8 **P, UINT32 Off) {
   EmitRexW(P); EmitByte(P, 0x8B);  // MOV r64, r/m64 (RCX has opcode extension 1)
   if (Off < 128) { EmitByte(P, 0x4B); EmitByte(P, (UINT8)Off); }  // [RBX+disp8], RCX
   else { EmitByte(P, 0x8B); EmitDword(P, Off); }
+}
+
+// CMP RAX, [RBX+off] — flags from RAX - mem
+STATIC VOID EmitCmpRaxMem (UINT8 **P, UINT32 Off) {
+  EmitRexW(P); EmitByte(P, 0x3B);  // CMP r64, r/m64
+  if (Off < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)Off); }
+  else { EmitByte(P, 0x83); EmitDword(P, Off); }
+}
+
+// CMP RAX, imm32 (sign-extended)
+STATIC VOID EmitCmpRaxImm32 (UINT8 **P, UINT32 Imm) {
+  EmitRexW(P); EmitByte(P, 0x3D); EmitDword(P, Imm);
+}
+
+// CMP RAX, RCX
+STATIC VOID EmitCmpRaxRcx (UINT8 **P) {
+  EmitRexW(P); EmitByte(P, 0x3B); EmitByte(P, 0xC1);
+}
+
+// NEG RCX (clobbers flags; caller must re-establish them before reading)
+STATIC VOID EmitNegRcx (UINT8 **P) {
+  EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xD9);
 }
 
 // MOV [RBX+off], RCX — store RCX to context
@@ -342,29 +357,241 @@ STATIC UINTN EmitTestBitBranch (UINT8 **P, UINTN RtOff, UINT32 Bit, UINT64 Targe
   return (UINTN)(*P - Start);
 }
 
-// =========== NZCV flag helper ===========
-STATIC VOID EmitUpdateNzcv (UINT8 **P, UINT32 PstateOff) {
-  // After arithmetic in RAX: compute N, Z, C, V and store to PSTATE[31:28]
-  // TEST RAX, RAX → sets SF, ZF
-  EmitRexW(P); EmitByte(P, 0x85); EmitByte(P, 0xC0);  // TEST RAX, RAX
-  // LAHF → AH
-  EmitByte(P, 0x9F);
-  // ROL EAX, 8 → AH moves to AL
-  EmitByte(P, 0xC1); EmitByte(P, 0xC0); EmitByte(P, 0x08);
-  // Now AL = SF:ZF:0:AF:0:PF:1:CF
-  // We want: N=SF(bit7), Z=ZF(bit6), C=CF(bit0), V=0
-  // Store AL to [RBX+PSTATE+3] (top byte of PSTATE holds N,Z,C,V)
-  EmitByte(P, 0x88);  // MOV r/m8, r8
-  if (PstateOff + 3 < 128) { EmitByte(P, 0x43); EmitByte(P, (UINT8)(PstateOff + 3)); }
-  else { EmitByte(P, 0x83); EmitDword(P, PstateOff + 3); }
+// =========== NZCV flag handling ===========
+//
+// Rosetta's flag emulation is only reliable for a single (producer, consumer)
+// pair, so multi-bit SETcc/PUSHFQ captures cannot be validated in the harness.
+// Flags are therefore tracked explicitly as data flow:
+//   - same-block:  EmitRecordFlagSet records the setter's operands in
+//                  Ctx->FlagSet; EmitCondBranchFromSet re-derives the branch
+//                  condition from those operands via cmp/jcc (a second
+//                  producer right next to its single consumer, which Rosetta
+//                  handles correctly).
+//   - cross-block: DbtComputeNzcv recomputes NZCV host-side from the recorded
+//                  operands and the post-block register state, and writes the
+//                  PSTATE byte.
+//
+STATIC VOID EmitRecordFlagSet (
+  IN DBT_CONTEXT *Ctx,
+  IN UINT8        Kind,
+  IN BOOLEAN      IsSub,
+  IN UINT8        LogicalOp,
+  IN UINT8        Rd,
+  IN UINT8        Rn,
+  IN UINT8        Rm,
+  IN BOOLEAN      HasReg2,
+  IN UINT64       Imm
+  )
+{
+  Ctx->FlagSet.HasSetter = TRUE;
+  Ctx->FlagSet.Kind      = Kind;
+  Ctx->FlagSet.IsSub     = IsSub;
+  Ctx->FlagSet.LogicalOp = LogicalOp;
+  Ctx->FlagSet.Rd        = Rd;
+  Ctx->FlagSet.Rn        = Rn;
+  Ctx->FlagSet.Rm        = Rm;
+  Ctx->FlagSet.HasReg2   = HasReg2;
+  Ctx->FlagSet.Imm       = Imm;
+}
+
+//
+// Re-derive the NZCV condition of the recorded flag setter in x86 flags,
+// then emit the branch decision as in EmitCondBranch but reading x86 flags
+// (from the fresh compare) instead of the PSTATE byte.
+//
+// Compare emission (producer for the jccs below):
+//   addsub-reg:  SUB: CMP RAX, [RBX+RmOff]         — flags = Rn - Rm
+//                ADD: RCX = -Rm; CMP RAX, RCX      — flags = Rn + Rm
+//   addsub-imm:  SUB: CMP RAX, imm32
+//                ADD: CMP RAX, -imm32
+//   logical:     AND/ORR/EOR RAX, [RBX+RmOff]      — flags = (Rn op Rm) result
+//
+STATIC UINTN EmitCondBranchFromSet (UINT8 **P, UINT32 Cond, UINT64 Target, UINT64 Fallthrough, DBT_FLAG_SET *Set) {
+  UINT8  *Start = *P;
+  UINT8   Seq[128];
+  UINT8  *Q   = Seq;
+  UINT8  *Slots[3];
+  UINT8   Jcc[3]  = { 0, 0, 0 };
+  UINT8   Targets[3] = { 0, 0, 0 };
+  UINTN   Num = 1;
+  UINTN   I;
+  UINT8  *TgtStart;
+  UINT32  RnOff;
+  UINT32  RmOff;
+  BOOLEAN IsLogical = (Set->Kind == FLAGKIND_LOGICAL);
+  BOOLEAN Clobbered;
+
+  EmitMovImm(&Q, Fallthrough);
+  EmitStoreRax(&Q, (UINT32)ArmRegPcOff());
+
+  // If the setter stored its result into Rn or Rm, the operands are gone and
+  // we must reconstruct them.  For logical setters the result itself gives
+  // exact N/Z (C/V are always clear), so a TEST on Rd suffices whenever the
+  // result was stored; only the comparison forms (Rd == XZR) re-read
+  // operands.  For add/sub, Z/N also equal the result's, but C/V need the
+  // original operands: when Rd == Rn (Rd == XZR stores nothing and leaves
+  // the operands intact), rebuild A = R -+ B from the result, then CMP.
+  if (IsLogical) {
+    Clobbered = FALSE;
+    if (Set->Rd != 31) {
+      EmitLoadRax(&Q, (UINT32)ArmRegXOff(Set->Rd));
+      EmitRexW(&Q); EmitByte(&Q, 0x85); EmitByte(&Q, 0xC0);  // TEST RAX, RAX
+    } else {
+      // Rd == XZR: result discarded; re-read operands (logical: XZR is 31)
+      EmitLoadRax(&Q, (UINT32)ArmRegXOff(Set->Rn));
+      EmitAndRaxMem(&Q, (UINT32)ArmRegXOff(Set->Rm));
+    }
+  } else {
+    Clobbered = (Set->Rd != 31) && (Set->Rd == Set->Rn)
+                && (!Set->HasReg2 || (Set->Rm != Set->Rd));
+    if (Set->Rn == 31 && !Clobbered) {
+      RnOff = Set->HasReg2 ? (UINT32)ArmRegXOff(31) : (UINT32)ArmRegSpOff();
+    } else {
+      RnOff = (UINT32)ArmRegXOff(Set->Rn);
+    }
+    RmOff = (UINT32)ArmRegXOff(Set->Rm);
+
+    if (Clobbered) {
+      // Rd == Rn and the result was stored: A = R -+ B, then CMP against B.
+      EmitLoadRax(&Q, (UINT32)ArmRegXOff(Set->Rd));
+      if (Set->HasReg2) {
+        if (Set->IsSub) { EmitAddRaxMem(&Q, RmOff); } else { EmitSubRaxMem(&Q, RmOff); }
+      } else if (Set->IsSub) {
+        EmitAddImm(&Q, (UINT32)Set->Imm);
+      } else {
+        EmitSubImm(&Q, (UINT32)Set->Imm);
+      }
+    } else {
+      EmitLoadRax(&Q, RnOff);
+    }
+
+    if (Set->HasReg2) {
+      if (Set->IsSub) {
+        EmitCmpRaxMem(&Q, RmOff);
+      } else {
+        EmitLoadRcx(&Q, RmOff);
+        EmitNegRcx(&Q);
+        EmitCmpRaxRcx(&Q);
+      }
+    } else if (Set->IsSub) {
+      EmitCmpRaxImm32(&Q, (UINT32)Set->Imm);
+    } else {
+      EmitCmpRaxImm32(&Q, (UINT32)(-(INT64)Set->Imm));
+    }
+  }
+
+  // Jcc slots: each fires when the branch is NOT taken, jumping over the
+  // Target store; a Targets[I]=1 entry jumps straight to TgtStart instead
+  // (the first flag already decided "taken").  For logical setters C and V
+  // are always clear, so CS/HI/VS never take and CC/LS/VC always take.
+  switch (Cond) {
+    case 0:   Jcc[0] = 0x75; break;                                  // EQ  — skip when ZF=0
+    case 1:   Jcc[0] = 0x74; break;                                  // NE  — skip when ZF=1
+    case 2:   Jcc[0] = IsLogical ? 0xEB : 0x72; break;               // CS  — skip when CF=1 (logical: never taken)
+    case 3:   Jcc[0] = IsLogical ? 0x00 : 0x73; Num = IsLogical ? 0 : 1; break;  // CC  — skip when CF=0 (logical: always taken)
+    case 4:   Jcc[0] = 0x79; break;                                  // MI  — skip when SF=0
+    case 5:   Jcc[0] = 0x78; break;                                  // PL  — skip when SF=1
+    case 6:   Jcc[0] = IsLogical ? 0xEB : 0x71; break;               // VS  — skip when OF=1 (logical: never taken)
+    case 7:   Num = 0; break;                                        // VC  — always taken
+    case 8:   Jcc[0] = IsLogical ? 0xEB : 0x72;                      // HI  — skip when CF=1 or ZF=1 (logical: never taken)
+              Jcc[1] = 0x74; Num = IsLogical ? 1 : 2; break;
+    case 9:   if (IsLogical) { Num = 0; }                            // LS  — logical: always taken
+              else { Jcc[0] = 0x74; Targets[0] = 1;                  // ZF=1 -> taken
+                     Jcc[1] = 0x73; Num = 2; }                       // CF=1 -> taken, else skip
+              break;
+    case 0xA: Jcc[0] = 0x7C; break;                                  // GE  — skip when N!=V (SF!=OF)
+    case 0xB: Jcc[0] = 0x7D; break;                                  // LT  — skip when N==V
+    case 0xC: Jcc[0] = 0x74;                                        // GT  — skip when ZF=1 or N!=V
+              Jcc[1] = 0x7C; Num = 2; break;
+    case 0xD: Jcc[0] = 0x74; Targets[0] = 1;                        // LE  — ZF=1 -> taken
+              Jcc[1] = 0x7D; Num = 2; break;                         //       N==V -> taken, else skip
+    case 0xE: Num = 0; break;                                        // AL
+    default:  Jcc[0] = 0xEB; break;                                  // NV  — never taken, always skip
+  }
+
+  for (I = 0; I < Num; I++) {
+    EmitJccSlot(&Q, Jcc[I], &Slots[I]);
+  }
+
+  TgtStart = Q;
+  EmitMovImm(&Q, Target);
+  EmitStoreRax(&Q, (UINT32)ArmRegPcOff());
+
+  PatchJcc (Slots, Targets, Num, Q, TgtStart);
+
+  CopyMem (*P, Seq, (UINTN)(Q - Seq));
+  *P += (UINTN)(Q - Seq);
+  return (UINTN)(*P - Start);
+}
+
+//
+// Recompute NZCV from the recorded flag setter's operands and the current
+// register state, and store it into PSTATE[31:24].  Called after each block
+// runs, so that consumers in later blocks read the PSTATE byte.  The ARM
+// PSTATE byte layout is: N=0x80, Z=0x40, V=0x10, C=0x01 (C complemented for
+// subtract: ARM C means "no borrow").
+//
+STATIC VOID DbtComputeNzcv (IN DBT_CONTEXT *Ctx) {
+  DBT_FLAG_SET *S   = &Ctx->FlagSet;
+  UINT64        A, B, R;
+  UINT8         Byte;
+  BOOLEAN       N, Z, C, V;
+
+  if (!S->HasSetter) {
+    return;
+  }
+
+  // Rn==31 is SP in the immediate form, XZR in the register form.
+  if (!S->HasReg2 && S->Rn == 31) {
+    A = Ctx->ArmState.SP;
+  } else {
+    A = Ctx->ArmState.X[S->Rn];
+  }
+  if (S->HasReg2) {
+    B = Ctx->ArmState.X[S->Rm];
+  } else {
+    B = S->Imm;
+  }
+
+  if (S->Kind == FLAGKIND_LOGICAL) {
+    switch (S->LogicalOp) {
+      case 1:  R = A | B; break;
+      case 2:  R = A ^ B; break;
+      default: R = A & B; break;
+    }
+    C = FALSE;
+    V = FALSE;
+  } else if (S->IsSub) {
+    R = A - B;
+    C = (A >= B);
+    V = (((A ^ B) & ((UINT64)1 << 63)) != 0) && (((A ^ R) & ((UINT64)1 << 63)) != 0);
+  } else {
+    R = A + B;
+    C = (R < A);
+    V = ((((A ^ B) & ((UINT64)1 << 63)) == 0) && (((A ^ R) & ((UINT64)1 << 63)) != 0));
+  }
+
+  N = ((R & ((UINT64)1 << 63)) != 0);
+  Z = (R == 0);
+
+  Byte  = N ? 0x80 : 0;
+  Byte |= Z ? 0x40 : 0;
+  Byte |= V ? 0x10 : 0;
+  Byte |= C ? 0x01 : 0;
+
+  Ctx->ArmState.PSTATE = (Ctx->ArmState.PSTATE & 0x00FFFFFFULL) | ((UINT64)Byte << 24);
+
+  // The setter's flags are now materialized; nothing stays pending.
+  S->HasSetter = FALSE;
 }
 
 // =========== Single instruction translator ===========
 STATIC UINTN DbtTranslateOne (
-  IN  UINT32  Inst,
-  IN  UINT64  InstAddr,
-  OUT UINT8  *X86Buf,
-  IN  UINTN   BufSize
+  IN  DBT_CONTEXT *Ctx,
+  IN  UINT32       Inst,
+  IN  UINT64       InstAddr,
+  OUT UINT8       *X86Buf,
+  IN  UINTN        BufSize
   )
 {
   UINT8  *P   = X86Buf;
@@ -381,7 +608,6 @@ STATIC UINTN DbtTranslateOne (
   UINTN   RtOff = ArmRegXOff(Rt);
   UINTN   Rt2Off= ArmRegXOff(Rt2);
   UINTN   PcOff = ArmRegPcOff();
-  UINTN   PsOff = PstateOff();
   UINTN   SpOff = ArmRegSpOff();
 
   if (DBT_VERBOSE) {
@@ -415,6 +641,37 @@ STATIC UINTN DbtTranslateOne (
       // Bitfield
       DBG((DEBUG_INFO, "DBT_ASM:    Bitfield -> NOP\n"));
       EmitNop(&P);
+    } else if (Sub == 2) {
+      //
+      // ADD/SUB immediate: sf(31) op(30) S(29) 100010(28:23) sh(22) imm12(21:10)
+      //
+      UINT32   Sh       = (Inst >> 22) & 1;
+      UINT32   Imm      = ((Inst >> 10) & 0xFFF) << (Sh ? 12 : 0);
+      BOOLEAN  IsSub    = (Inst >> 30) & 1;
+      BOOLEAN  SetFlags = (Inst >> 29) & 1;
+
+      DBG((DEBUG_INFO, "DBT_ASM:    %s X%d, X%d, #0x%x%s\n",
+               IsSub ? "SUB" : "ADD", Rd, Rn, Imm, SetFlags ? " (flags)" : ""));
+
+      if (Rn == 31) {
+        // From SP or XZR
+        UINTN SrcOff = SpOff;
+        EmitLoadRax(&P, SrcOff);
+        if (IsSub) { EmitSubImm(&P, Imm); }
+        else       { EmitAddImm(&P, Imm); }
+        if (Rd == 31) {
+          EmitNop(&P); // discard result
+        } else {
+          EmitStoreRax(&P, RdOff);
+        }
+        if (SetFlags) EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, 0, FALSE, Imm);
+      } else {
+        EmitLoadRax(&P, RnOff);
+        if (IsSub) { EmitSubImm(&P, Imm); }
+        else       { EmitAddImm(&P, Imm); }
+        if (Rd != 31) EmitStoreRax(&P, RdOff);
+        if (SetFlags) EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, 0, FALSE, Imm);
+      }
     } else {
       DBG((DEBUG_INFO, "DBT_ASM:    Unknown immediate -> NOP\n"));
       EmitNop(&P);
@@ -440,42 +697,8 @@ STATIC UINTN DbtTranslateOne (
       EmitStoreRax(&P, RdOff);
     } else {
       // ADD/SUB immediate
-      UINT32 Sh  = (Inst >> 22) & 1;
-      UINT32 Imm = ((Inst >> 10) & 0xFFF) << (Sh ? 12 : 0);
-      BOOLEAN IsSub = (Inst >> 30) & 1;
-      BOOLEAN SetFlags = (Inst >> 29) & 1;
-
-      DBG((DEBUG_INFO, "DBT_ASM:    %s X%d, X%d, #0x%x%s\n",
-               IsSub ? "SUB" : "ADD", Rd, Rn, Imm, SetFlags ? " (flags)" : ""));
-
-      if (Rn == 31) {
-        // From SP or XZR
-        if (IsSub && Rd == 31 && SetFlags) {
-          // CMP SP, #imm — not implemented
-          EmitNop(&P);
-        } else {
-          UINTN SrcOff = (Rn == 31) ? SpOff : RnOff;
-          if (Rd == 31) {
-            // Result to XZR — load, compute, discard
-            EmitLoadRax(&P, SrcOff);
-            if (IsSub) { EmitSubImm(&P, Imm); }
-            else       { EmitAddImm(&P, Imm); }
-            EmitNop(&P); // discard result
-          } else {
-            EmitLoadRax(&P, SrcOff);
-            if (IsSub) { EmitSubImm(&P, Imm); }
-            else       { EmitAddImm(&P, Imm); }
-            EmitStoreRax(&P, RdOff);
-          }
-          if (SetFlags) EmitUpdateNzcv(&P, PsOff);
-        }
-      } else {
-        EmitLoadRax(&P, RnOff);
-        if (IsSub) { EmitSubImm(&P, Imm); }
-        else       { EmitAddImm(&P, Imm); }
-        if (Rd != 31) EmitStoreRax(&P, RdOff);
-        if (SetFlags) EmitUpdateNzcv(&P, PsOff);
-      }
+      DBG((DEBUG_INFO, "DBT_ASM:    ADD/SUB immediate (unreachable) -> NOP\n"));
+      EmitNop(&P);
     }
     return (UINTN)(P - X86Buf);
   }
@@ -534,36 +757,41 @@ STATIC UINTN DbtTranslateOne (
         EmitNop(&P);
       }
     } else {
-      // Data processing register
-      UINT32 Opc = (Inst >> 29) & 3;
-      BOOLEAN SetFlags = (Inst >> 29) & 1;
+      // Data processing register; bit 24 discriminates the families:
+      //   logical (01010):  opc(30:29) 0=AND, 1=ORR, 2=EOR, 3=ANDS
+      //   add/sub (01011):  op(30) S(29) 0=ADD/1=SUB, S sets flags
+      UINT32  Bit24 = (Inst >> 24) & 1;
+      UINT32  Opc   = (Inst >> 29) & 3;
 
-      if (Opc == 0 || Opc == 3) {
-        // AND/ORR/EOR (Opc=0) or ANDS/... (Opc=3 with S)
-        UINT32 LogicalOp = (Inst >> 29) & 3;
-
-        if (LogicalOp == 0) {
-          DBG((DEBUG_INFO, "DBT_ASM:    AND%s X%d, X%d, X%d\n", SetFlags ? " (flags)" : "", Rd, Rn, Rm));
+      if (Bit24 == 0) {
+        // AND/ORR/EOR (Opc 0..2) and ANDS (Opc 3)
+        if (Opc == 0) {
+          DBG((DEBUG_INFO, "DBT_ASM:    AND X%d, X%d, X%d\n", Rd, Rn, Rm));
           EmitLoadRax(&P, RnOff);
           EmitAndRaxMem(&P, RmOff);
           if (Rd != 31) EmitStoreRax(&P, RdOff);
-          if (SetFlags) EmitUpdateNzcv(&P, PsOff);
-        } else if (LogicalOp == 1) {
-          DBG((DEBUG_INFO, "DBT_ASM:    ORR%s X%d, X%d, X%d\n", SetFlags ? " (flags)" : "", Rd, Rn, Rm));
+        } else if (Opc == 1) {
+          DBG((DEBUG_INFO, "DBT_ASM:    ORR X%d, X%d, X%d\n", Rd, Rn, Rm));
           EmitLoadRax(&P, RnOff);
           EmitOrRaxMem(&P, RmOff);
           if (Rd != 31) EmitStoreRax(&P, RdOff);
-          if (SetFlags) EmitUpdateNzcv(&P, PsOff);
-        } else if (LogicalOp == 2) {
-          DBG((DEBUG_INFO, "DBT_ASM:    EOR%s X%d, X%d, X%d\n", SetFlags ? " (flags)" : "", Rd, Rn, Rm));
+        } else if (Opc == 2) {
+          DBG((DEBUG_INFO, "DBT_ASM:    EOR X%d, X%d, X%d\n", Rd, Rn, Rm));
           EmitLoadRax(&P, RnOff);
           EmitXorRaxMem(&P, RmOff);
           if (Rd != 31) EmitStoreRax(&P, RdOff);
-          if (SetFlags) EmitUpdateNzcv(&P, PsOff);
+        } else {
+          // ANDS (always sets flags)
+          DBG((DEBUG_INFO, "DBT_ASM:    ANDS X%d, X%d, X%d (flags)\n", Rd, Rn, Rm));
+          EmitLoadRax(&P, RnOff);
+          EmitAndRaxMem(&P, RmOff);
+          if (Rd != 31) EmitStoreRax(&P, RdOff);
+          EmitRecordFlagSet(Ctx, FLAGKIND_LOGICAL, FALSE, 0, Rd, Rn, Rm, TRUE, 0);
         }
-      } else if (Opc == 1 || Opc == 2) {
+      } else {
         // ADD/SUB register
-        BOOLEAN IsSub = (Opc == 2);
+        BOOLEAN IsSub     = (Inst >> 30) & 1;
+        BOOLEAN SetFlags  = (Inst >> 29) & 1;
 
         DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, X%d, X%d\n",
                  IsSub ? "SUB" : "ADD", SetFlags ? " (flags)" : "", Rd, Rn, Rm));
@@ -572,7 +800,7 @@ STATIC UINTN DbtTranslateOne (
         if (IsSub) EmitSubRaxMem(&P, RmOff);
         else       EmitAddRaxMem(&P, RmOff);
         if (Rd != 31) EmitStoreRax(&P, RdOff);
-        if (SetFlags) EmitUpdateNzcv(&P, PsOff);
+        if (SetFlags) EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, Rm, TRUE, 0);
       }
     }
     return (UINTN)(P - X86Buf);
@@ -591,6 +819,10 @@ STATIC UINTN DbtTranslateOne (
       INT64  Target = InstAddr + ((Off << 43) >> 43);
 
       DBG((DEBUG_INFO, "DBT_ASM:    B.%s 0x%llx\n", CondNames[Cond], Target));
+      if (Ctx->FlagSet.HasSetter) {
+        // Same-block setter: re-derive the condition from its operands.
+        return EmitCondBranchFromSet(&P, Cond, (UINT64)Target, InstAddr + 4, &Ctx->FlagSet);
+      }
       return EmitCondBranch(&P, Cond, (UINT64)Target, InstAddr + 4);
     } else if ((Inst & 0x7C000000) == 0x14000000) {
       // Unconditional branch B / BL
@@ -608,6 +840,9 @@ STATIC UINTN DbtTranslateOne (
       }
       EmitMovImm(&P, (UINT64)Target);
       EmitStoreRax(&P, PcOff);
+      // Terminator: nothing after this instruction can consume the setter's
+      // flags, and the block ends here, so drop the pending descriptor.
+      Ctx->FlagSet.HasSetter = FALSE;
     } else if ((Inst & 0x7E000000) == 0x34000000) {
       // CBZ / CBNZ
       INT64  Off    = ((Inst >> 5) & 0x7FFFF) << 2;
@@ -652,6 +887,9 @@ STATIC UINTN DbtTranslateOne (
         DBG((DEBUG_INFO, "DBT_ASM:    Unknown branch reg -> NOP\n"));
         EmitNop(&P);
       }
+      // BR/BLR/RET are terminators: the pending flag setter cannot be
+      // consumed after them (and the block ends), so drop the descriptor.
+      Ctx->FlagSet.HasSetter = FALSE;
     } else {
       DBG((DEBUG_INFO, "DBT_ASM:    Unhandled branch top=0x%02x -> NOP\n", TopByte));
       EmitNop(&P);
@@ -910,6 +1148,9 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
   VOID (*Entry)(DBT_ARM64_STATE *) = (VOID(*)(DBT_ARM64_STATE*))Ctx->TranslatedCode;
   Entry(&Ctx->ArmState);
 
+  // Materialize NZCV from the last flag setter's operands and register state.
+  DbtComputeNzcv (Ctx);
+
   // Copy state back
   CopyMem(ArmState, &Ctx->ArmState, sizeof(DBT_ARM64_STATE));
 
@@ -941,13 +1182,16 @@ EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, U
 
   Ctx->LastBlockStart = Buf;
 
+  // No flag setter is pending at the start of a block.
+  Ctx->FlagSet.HasSetter = FALSE;
+
   UINT32 *Inst = (UINT32 *)ArmCode;
   UINT64  Addr = BaseAddr; // Address tracking needed for PC-relative
   UINTN   Count = 0;
   UINTN   Remaining = CodeSize / 4;
 
   while (Remaining-- && (UINTN)(Buf - Start) + 64 < Max) {
-    UINTN Used = DbtTranslateOne(*Inst, Addr, Buf, 64);
+    UINTN Used = DbtTranslateOne(Ctx, *Inst, Addr, Buf, 64);
     Buf  += Used;
     Inst++;
     Addr += 4;
