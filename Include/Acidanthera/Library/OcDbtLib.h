@@ -120,6 +120,12 @@ DbtTranslateBlock (
   OUT    VOID         *X86Code  OPTIONAL
   );
 
+BOOLEAN
+DbtBlockCached (
+  IN DBT_CONTEXT  *Context,
+  IN UINT64        Pc
+  );
+
 VOID
 DbtFreeContext (
   IN DBT_CONTEXT  *Context

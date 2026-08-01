@@ -53,6 +53,19 @@ typedef struct DBT_CONTEXT {
   UINTN            CodeCapacity;
   UINT8           *JumpSlot;
   UINT8           *LastBlockStart;
+  //
+  // Guest PC -> translated-block cache (Rosetta 2 style).  BlockMapPc is a
+  // sorted array of block-start guest PCs, BlockMapOff the parallel offsets
+  // into TranslatedCode.  Direct branches whose target is already cached
+  // chain straight into the cached block instead of returning to the
+  // driver; DbtExecute re-points the jump slot at the cached block for the
+  // current PC so already-translated blocks (e.g. loop bodies) are never
+  // re-translated.
+  //
+  UINT64          *BlockMapPc;
+  UINT32          *BlockMapOff;
+  UINTN            BlockMapCount;
+  UINTN            BlockMapCap;
   DBT_FLAG_SET     FlagSet;
   DBT_FLAG_SET     PrevSlots[8];  // CCMP gate-chain snapshot pool
   UINTN            PrevCount;

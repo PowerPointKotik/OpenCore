@@ -1183,6 +1183,9 @@ SKIP_READ_APPLE_KERNEL:
       }
 
       DbtTranslateBlock (gDbtContext, (VOID *)(Pa), Off + 4, ArmContext.PC, NULL);
+      if (DbtBlockCached (gDbtContext, ArmContext.PC)) {
+        DEBUG ((DEBUG_INFO, "DBT: [cached] PC=0x%llx — no re-translation\n", ArmContext.PC));
+      }
       DbtExecute (gDbtContext, &ArmContext);
     }
 

@@ -46,10 +46,36 @@ STATIC DBT_CONTEXT *gDbtActiveCtx = NULL;
 STATIC UINT64       gDbtHelperVa  = 0;
 
 //
+// Runtime trace scratch slots.  Translated code stores the guest PC, the
+// effective address of a load/store, the transferred value and the sysreg
+// key into these globals (ABI-agnostically, like gDbtHelperVa) and then
+// calls the no-argument trace helpers below.
+//
+STATIC UINT64       gDbtTracePc   = 0;  // guest PC of the current block/instruction
+STATIC UINT64       gDbtTraceVa   = 0;  // guest effective address (LDR/STR)
+STATIC UINT64       gDbtTraceVal  = 0;  // value loaded/stored / sysreg value
+STATIC UINT32       gDbtTraceSize = 0;  // access size 0=B 1=H 2=W 3=X
+STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|crm<<4|op2)
+
+//
 // Host-side VA->host-address helper invoked by the translated LDR/STR
-// code (forward declaration; defined in the MMU helpers section).
+// code (forward declaration; defined in the MMU helpers section), and the
+// runtime trace helpers invoked by the translated code when DBT_VERBOSE
+// is enabled.
 //
 UINT64 DbtMapHostAddr (VOID);
+VOID   DbtTraceBlock   (VOID);
+VOID   DbtTraceMemSt   (VOID);
+VOID   DbtTraceMemLd   (VOID);
+VOID   DbtTraceSys     (VOID);
+
+//
+// Forward declarations for emitters used by the trace code below but
+// defined in later sections.
+//
+STATIC VOID EmitMovRcxImm (UINT8 **P, UINT64 Val);
+STATIC VOID EmitCaptureVa (UINT8 **P);
+STATIC VOID DbtDumpState (IN CONST CHAR8 *Tag, IN DBT_ARM64_STATE *S);
 
 //
 // =========== ARM64 instruction decode helpers ===========
@@ -224,9 +250,67 @@ STATIC VOID EmitLoadRcx (UINT8 **P, UINT32 Off) {
 // host address corresponding to the guest VA (identity for non-image VAs).
 //
 STATIC VOID EmitCallMapHelper (UINT8 **P) {
+  if (DBT_VERBOSE) {
+    EmitCaptureVa(P);                        // gDbtTraceVa = RCX (guest address)
+  }
   EmitMovImm(P, (UINT64)(UINTN)&gDbtHelperVa);   // RAX = &gDbtHelperVa
   EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x08);      // MOV [RAX], RCX
   EmitMovImm(P, (UINT64)(UINTN)DbtMapHostAddr);           // RAX = DbtMapHostAddr
+  EmitByte(P, 0xFF); EmitByte(P, 0xD0);                   // CALL RAX
+}
+
+// MOV [RAX], RCX — store RCX through the absolute address in RAX
+STATIC VOID EmitStoreGlobalRcx (UINT8 **P) {
+  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x08);
+}
+
+//
+// Emit:  gDbtTraceVa = RCX;  then the DbtMapHostAddr call.
+// RCX still holds the guest effective address at helper entry, so the
+// trace slot is captured here — before any of the volatile registers are
+// clobbered by the helper call.
+//
+STATIC VOID EmitCaptureVa (UINT8 **P) {
+  EmitMovImm(P, (UINT64)(UINTN)&gDbtTraceVa);
+  EmitStoreGlobalRcx(P);
+}
+
+//
+// Emit:  gDbtTraceVal = RCX; gDbtTraceSize = Size; CALL DbtTraceMemSt/Ld
+//
+STATIC VOID EmitTraceMem (UINT8 **P, UINT32 Size, BOOLEAN IsLoad) {
+  EmitMovImm(P, (UINT64)(UINTN)&gDbtTraceVal);
+  EmitStoreGlobalRcx(P);
+  EmitMovRcxImm(P, Size);
+  EmitMovImm(P, (UINT64)(UINTN)&gDbtTraceSize);
+  EmitStoreGlobalRcx(P);
+  EmitMovImm(P, (UINT64)(UINTN)(IsLoad ? DbtTraceMemLd : DbtTraceMemSt));
+  EmitByte(P, 0xFF); EmitByte(P, 0xD0);                   // CALL RAX
+}
+
+//
+// Emit:  gDbtTracePc = Pc; CALL DbtTraceBlock   (once per translated block)
+//
+STATIC VOID EmitTraceBlock (UINT8 **P, UINT64 Pc) {
+  EmitMovRcxImm(P, Pc);
+  EmitMovImm(P, (UINT64)(UINTN)&gDbtTracePc);
+  EmitStoreGlobalRcx(P);
+  EmitMovImm(P, (UINT64)(UINTN)DbtTraceBlock);
+  EmitByte(P, 0xFF); EmitByte(P, 0xD0);                   // CALL RAX
+}
+
+//
+// Emit:  gDbtTraceSys = Key; gDbtTraceVal = RAX; CALL DbtTraceSys
+// (sysreg access; RAX holds the written/read value at the call site)
+//
+STATIC VOID EmitTraceSys (UINT8 **P, UINT64 Key) {
+  EmitMovRcxImm(P, Key);
+  EmitMovImm(P, (UINT64)(UINTN)&gDbtTraceSys);
+  EmitStoreGlobalRcx(P);
+  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xC1);      // MOV RCX, RAX
+  EmitMovImm(P, (UINT64)(UINTN)&gDbtTraceVal);
+  EmitStoreGlobalRcx(P);
+  EmitMovImm(P, (UINT64)(UINTN)DbtTraceSys);
   EmitByte(P, 0xFF); EmitByte(P, 0xD0);                   // CALL RAX
 }
 
@@ -247,6 +331,9 @@ STATIC VOID EmitMemAccess (UINT8 **P, UINT32 Size, UINT32 Opc, BOOLEAN Sf, UINT3
     else if (Size == 1) { EmitByte(P, 0x66); EmitByte(P, 0x89); EmitByte(P, 0x08); }  // MOV [RAX], CX
     else if (Size == 2) { EmitByte(P, 0x89); EmitByte(P, 0x08); }        // MOV [RAX], ECX
     else { EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x08); }          // MOV [RAX], RCX
+    if (DBT_VERBOSE) {
+      EmitTraceMem(P, Size, FALSE);    // RCX still holds the stored value
+    }
     return;
   }
   // LDR / LDRSB / LDRSH / LDRSW
@@ -267,6 +354,10 @@ STATIC VOID EmitMemAccess (UINT8 **P, UINT32 Size, UINT32 Opc, BOOLEAN Sf, UINT3
     }
   }
   EmitStoreRax(P, RtOff);
+  if (DBT_VERBOSE) {
+    EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xC1);   // MOV RCX, RAX (loaded value)
+    EmitTraceMem(P, Size, TRUE);
+  }
 }
 
 // CMP RAX, imm32 (sign-extended)
@@ -526,12 +617,16 @@ STATIC VOID EmitComputeFlagsFromSet (UINT8 **Q, DBT_FLAG_SET *Set) {
       if (Set->Rm == 31) { EmitMovImm(Q, 0); } else { EmitLoadRcx(Q, (UINT32)ArmRegXOff(Set->Rm)); }
       if (Set->IsW) { EmitByte(Q, 0x89); EmitByte(Q, 0xC9); }
       EmitShiftRcx(Q, Set->ShiftKind, Set->ShiftAmt);
-      if (Set->IsSub) { EmitCmpRaxRcx(Q); } else { EmitNegRcx(Q); EmitCmpRaxRcx(Q); EmitByte(Q, 0xF5); }
+      if (Set->IsSub) { EmitCmpRaxRcx(Q); }
+      else {
+        EmitNegRcx(Q); EmitCmpRaxRcx(Q);
+        if (Set->Rm == 31) { EmitByte(Q, 0xF5); }  // B=0: -0 wraps; CMP sets CF=0
+      }
     } else if (Set->IsSub) {
       EmitCmpRaxImm32(Q, (UINT32)Set->Imm);
     } else {
       EmitCmpRaxImm32(Q, (UINT32)(-(INT64)Set->Imm));
-      EmitByte(Q, 0xF5);
+      if (Set->Imm == 0) { EmitByte(Q, 0xF5); }    // B=0 boundary as above
     }
     EmitJccSlot (Q, 0xEB, &Ldone2);
     if (Lconst != NULL) {
@@ -627,7 +722,7 @@ STATIC VOID EmitComputeFlagsFromSet (UINT8 **Q, DBT_FLAG_SET *Set) {
         else { EmitNegRcx(Q); }
         if (Set->IsW) { EmitByte(Q, 0x39); EmitByte(Q, 0xC8); }
         else { EmitCmpRaxRcx(Q); }
-        EmitByte(Q, 0xF5);                                       // cmc -> subtract convention
+        if (Set->Rm == 31) { EmitByte(Q, 0xF5); }  // B=0: -0 wraps; CMP sets CF=0
       }
     } else if (Set->IsSub) {
       if (Set->IsW) { EmitByte(Q, 0x3D); EmitDword(Q, (UINT32)Set->Imm); }   // CMP EAX, imm32
@@ -635,7 +730,7 @@ STATIC VOID EmitComputeFlagsFromSet (UINT8 **Q, DBT_FLAG_SET *Set) {
     } else {
       if (Set->IsW) { EmitByte(Q, 0x3D); EmitDword(Q, (UINT32)(-(INT64)Set->Imm)); }
       else { EmitCmpRaxImm32(Q, (UINT32)(-(INT64)Set->Imm)); }
-      EmitByte(Q, 0xF5);                                       // cmc -> subtract convention
+      if (Set->Imm == 0) { EmitByte(Q, 0xF5); }    // B=0 boundary as above
     }
   }
 }
@@ -749,6 +844,158 @@ STATIC UINTN EmitTestBitBranch (UINT8 **P, UINTN RtOff, UINT32 Bit, UINT64 Targe
   return (UINTN)(*P - Start);
 }
 
+// =========== Block translation cache (guest PC -> translated block) ===========
+//
+// Rosetta 2 keeps an x86->ARM lookup (binary search + branch-target hash)
+// so indirect jumps land directly in translated code.  The mirror here:
+// BlockMapPc is a sorted array of block-start guest PCs, BlockMapOff the
+// parallel offsets into TranslatedCode.  Terminators whose target is cached
+// chain straight into the block (E9 rel32); DbtExecute re-points the jump
+// slot at the cached block for the current PC so loop bodies are translated
+// exactly once.
+
+STATIC UINTN DbtMapFind (IN DBT_CONTEXT *Ctx, IN UINT64 Pc) {
+  UINTN Lo = 0;
+  UINTN Hi = Ctx->BlockMapCount;
+
+  while (Lo < Hi) {
+    UINTN Mid = (Lo + Hi) / 2;
+    if (Ctx->BlockMapPc[Mid] < Pc) { Lo = Mid + 1; }
+    else { Hi = Mid; }
+  }
+  return Lo;   // first index with BlockMapPc[Lo] >= Pc
+}
+
+// Returns the translated offset for Pc, or 0xFFFFFFFF when not cached.
+STATIC UINT32 DbtMapLookup (IN DBT_CONTEXT *Ctx, IN UINT64 Pc) {
+  UINTN I;
+
+  if (Ctx == NULL || Ctx->BlockMapPc == NULL) return 0xFFFFFFFF;
+  I = DbtMapFind (Ctx, Pc);
+  if (I < Ctx->BlockMapCount && Ctx->BlockMapPc[I] == Pc) {
+    return Ctx->BlockMapOff[I];
+  }
+  return 0xFFFFFFFF;
+}
+
+STATIC EFI_STATUS DbtMapInsert (IN OUT DBT_CONTEXT *Ctx, IN UINT64 Pc, IN UINT32 Off) {
+  UINTN   I;
+  UINT64 *NewPc;
+  UINT32 *NewOff;
+
+  if (Ctx == NULL) return EFI_INVALID_PARAMETER;
+
+  I = DbtMapFind (Ctx, Pc);
+  if (I < Ctx->BlockMapCount && Ctx->BlockMapPc[I] == Pc) {
+    return EFI_ALREADY_STARTED;   // duplicate — caller treats as success
+  }
+
+  if (Ctx->BlockMapCount >= Ctx->BlockMapCap) {
+    UINTN NewCap = Ctx->BlockMapCap ? Ctx->BlockMapCap * 2 : 256;
+
+    NewPc  = AllocateZeroPool (NewCap * sizeof (UINT64));
+    if (NewPc == NULL) return EFI_OUT_OF_RESOURCES;
+    NewOff = AllocateZeroPool (NewCap * sizeof (UINT32));
+    if (NewOff == NULL) {
+      FreePool (NewPc);
+      return EFI_OUT_OF_RESOURCES;
+    }
+    if (Ctx->BlockMapPc != NULL) {
+      CopyMem (NewPc,  Ctx->BlockMapPc,  Ctx->BlockMapCount * sizeof (UINT64));
+      CopyMem (NewOff, Ctx->BlockMapOff, Ctx->BlockMapCount * sizeof (UINT32));
+      FreePool (Ctx->BlockMapPc);
+      FreePool (Ctx->BlockMapOff);
+    }
+    Ctx->BlockMapPc  = NewPc;
+    Ctx->BlockMapOff = NewOff;
+    Ctx->BlockMapCap = NewCap;
+  }
+
+  if (I < Ctx->BlockMapCount) {
+    // Shift the tail up by one, back to front (overlap-safe: CopyMem makes
+    // no aliasing guarantees).
+    for (UINTN J = Ctx->BlockMapCount; J > I; J--) {
+      Ctx->BlockMapPc[J]  = Ctx->BlockMapPc[J - 1];
+      Ctx->BlockMapOff[J] = Ctx->BlockMapOff[J - 1];
+    }
+  }
+  Ctx->BlockMapPc[I]  = Pc;
+  Ctx->BlockMapOff[I] = Off;
+  Ctx->BlockMapCount++;
+  return EFI_SUCCESS;
+}
+
+// E9 rel32 — unconditional jump to a translated block.
+STATIC VOID EmitJmpBlock (UINT8 **P, IN DBT_CONTEXT *Ctx, IN UINT32 TargetOff) {
+  INTN Rel = (INTN)((UINT8 *)Ctx->TranslatedCode + TargetOff) - (INTN)(*P + 5);
+
+  EmitByte(P, 0xE9);
+  EmitDword(P, (UINT32)Rel);
+}
+
+//
+// Conditional branch whose taken path jumps straight into a cached block.
+// The not-taken path stores the fallthrough PC and returns to the driver
+// (same shape as EmitCondBranch, minus the target PC store).
+//
+STATIC UINTN EmitCondBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINT32 Cond, UINT32 TargetOff, UINT64 Fallthrough) {
+  UINT8  *Start = *P;
+  UINT8  *Ldone = NULL;
+  UINT8   NoTargets[1] = { 0 };
+
+  EmitMovImm(P, Fallthrough);
+  EmitStoreRax(P, (UINT32)ArmRegPcOff());
+
+  // mov al, [rbx+PSTATE+3]
+  EmitByte(P, 0x8A); EmitByte(P, 0x83); EmitDword(P, (UINT32)(PstateOff() + 3));
+
+  EmitCondTrueFromPstate (P, Cond, &Ldone);
+
+  EmitJmpBlock(P, Ctx, TargetOff);
+
+  PatchJcc (&Ldone, NoTargets, 1, *P, *P);
+  return (UINTN)(*P - Start);
+}
+
+//
+// CBZ/CBNZ chained: taken path jumps into the cached block.
+//
+STATIC UINTN EmitCompareBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINTN RtOff, UINT32 TargetOff, UINT64 Fallthrough, UINT8 SkipJcc) {
+  UINT8  *Start = *P;
+  UINT8  *Slot;
+
+  EmitLoadRax(P, (UINT32)RtOff);
+  EmitRexW(P); EmitByte(P, 0x85); EmitByte(P, 0xC0);  // TEST RAX, RAX
+
+  EmitMovImm(P, Fallthrough);
+  EmitStoreRax(P, (UINT32)ArmRegPcOff());
+  EmitJccSlot(P, SkipJcc, &Slot);
+  EmitJmpBlock(P, Ctx, TargetOff);
+  Slot[1] = (UINT8)((*P) - (Slot + 2));
+
+  return (UINTN)(*P - Start);
+}
+
+//
+// TBZ/TBNZ chained: taken path jumps into the cached block.
+//
+STATIC UINTN EmitTestBitBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINTN RtOff, UINT32 Bit, UINT32 TargetOff, UINT64 Fallthrough, UINT8 SkipJcc) {
+  UINT8  *Start = *P;
+  UINT8  *Slot;
+
+  EmitLoadRax(P, (UINT32)RtOff);
+  EmitByte(P, 0xB9); EmitDword(P, Bit);               // MOV ECX, imm32
+  EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0xA3); EmitByte(P, 0xC8);  // BT RAX, RCX
+
+  EmitMovImm(P, Fallthrough);
+  EmitStoreRax(P, (UINT32)ArmRegPcOff());
+  EmitJccSlot(P, SkipJcc, &Slot);
+  EmitJmpBlock(P, Ctx, TargetOff);
+  Slot[1] = (UINT8)((*P) - (Slot + 2));
+
+  return (UINTN)(*P - Start);
+}
+
 // =========== NZCV flag handling ===========
 //
 // Rosetta's flag emulation is only reliable for a single (producer, consumer)
@@ -845,12 +1092,20 @@ STATIC VOID EmitRecordCcmp (
 // then emit the branch decision as in EmitCondBranch but reading x86 flags
 // (from the fresh compare) instead of the PSTATE byte.
 //
-// Compare emission (producer for the jccs below):
-//   addsub-reg:  SUB: CMP RAX, [RBX+RmOff]         — flags = Rn - Rm
-//                ADD: RCX = -Rm; CMP RAX, RCX      — flags = Rn + Rm
+// Compare emission (producer for the jccs below).  Canonical x86 CF is the
+// "borrow convention": CF = NOT ARM C.  Verified against x86 (incl. Rosetta
+// 2) flag semantics:
+//   addsub-reg:  SUB: CMP RAX, [RBX+RmOff]         — CF = borrow(Rn-Rm) = !C
+//                ADD: RCX = -Rm; CMP RAX, RCX      — CF = borrow(Rn+Rm) = !C
 //   addsub-imm:  SUB: CMP RAX, imm32
 //                ADD: CMP RAX, -imm32
 //   logical:     AND/ORR/EOR RAX, [RBX+RmOff]      — flags = (Rn op Rm) result
+// The ADD forms work because CMP a, -b computes borrow(a+b), which equals
+// NOT carry(a+b) — i.e. NOT ARM C — for every b != 0.  At the b == 0
+// boundary (-b wraps to 0) CMP sets CF = 0 while the convention wants 1, so
+// a conditional CMC re-inverts exactly there.  (This mirrors Rosetta 2's
+// CFINV usage: Apple canonicalises ARM C as inverted for subtracts and
+// corrects the ADD paths with CFINV.)
 //
 // Host-side condition evaluation against a PSTATE-format flags byte
 // (N=0x80, Z=0x40, V=0x10, C=0x01).  Returns TRUE when Cond holds.
@@ -1013,6 +1268,8 @@ STATIC UINTN DbtTranslateOne (
   UINT8   Rn  = Arm64Rn(Inst);
   UINT8   Rm  = Arm64Rm(Inst);
   UINT8   Rt  = Arm64Rt(Inst);
+
+  (VOID)BufSize;
 
   UINTN   RdOff = ArmRegXOff(Rd);
   UINTN   RnOff = ArmRegXOff(Rn);
@@ -1547,7 +1804,18 @@ STATIC UINTN DbtTranslateOne (
       DBG((DEBUG_INFO, "DBT_ASM:    B.%s 0x%llx\n", CondNames[Cond], Target));
       if (Ctx->FlagSet.HasSetter) {
         // Same-block setter: re-derive the condition from its operands.
+        // The pending setter must not be dropped — DbtComputeNzcv
+        // materialises it after the block returns.
         return EmitCondBranchFromSet(&P, Cond, (UINT64)Target, InstAddr + 4, &Ctx->FlagSet);
+      }
+      {
+        // No setter pending: the branch decision comes from PSTATE, which is
+        // fixed for the whole chain, so the taken path can jump straight into
+        // the cached target block.
+        UINT32 TgtOff = DbtMapLookup(Ctx, (UINT64)Target);
+        if (TgtOff != 0xFFFFFFFF) {
+          return EmitCondBranchChained(&P, Ctx, Cond, TgtOff, InstAddr + 4);
+        }
       }
       return EmitCondBranch(&P, Cond, (UINT64)Target, InstAddr + 4);
     } else if ((Inst & 0x7C000000) == 0x14000000) {
@@ -1564,8 +1832,15 @@ STATIC UINTN DbtTranslateOne (
       } else {
         DBG((DEBUG_INFO, "DBT_ASM:    B 0x%llx\n", Target));
       }
-      EmitMovImm(&P, (UINT64)Target);
-      EmitStoreRax(&P, PcOff);
+      {
+        UINT32 TgtOff = DbtMapLookup(Ctx, (UINT64)Target);
+        if (TgtOff != 0xFFFFFFFF) {
+          EmitJmpBlock(&P, Ctx, TgtOff);
+        } else {
+          EmitMovImm(&P, (UINT64)Target);
+          EmitStoreRax(&P, PcOff);
+        }
+      }
       // Terminator: nothing after this instruction can consume the setter's
       // flags, and the block ends here, so drop the pending descriptor.
       Ctx->FlagSet.HasSetter = FALSE;
@@ -1576,6 +1851,12 @@ STATIC UINTN DbtTranslateOne (
       BOOLEAN NonZero = (Inst >> 24) & 1;
 
       DBG((DEBUG_INFO, "DBT_ASM:    CB%s X%d, 0x%llx\n", NonZero ? "NZ" : "Z", Rt, Target));
+      {
+        UINT32 TgtOff = DbtMapLookup(Ctx, (UINT64)Target);
+        if (TgtOff != 0xFFFFFFFF) {
+          return EmitCompareBranchChained(&P, Ctx, RtOff, TgtOff, InstAddr + 4, NonZero ? 0x74 : 0x75);
+        }
+      }
       return EmitCompareBranch(&P, RtOff, (UINT64)Target, InstAddr + 4, NonZero ? 0x74 : 0x75);
     } else if ((Inst & 0x7E000000) == 0x36000000) {
       // TBZ / TBNZ
@@ -1585,6 +1866,12 @@ STATIC UINTN DbtTranslateOne (
       BOOLEAN NonZero = (Inst >> 24) & 1;
 
       DBG((DEBUG_INFO, "DBT_ASM:    TB%s X%d, #%u, 0x%llx\n", NonZero ? "NZ" : "Z", Rt, Bit, Target));
+      {
+        UINT32 TgtOff = DbtMapLookup(Ctx, (UINT64)Target);
+        if (TgtOff != 0xFFFFFFFF) {
+          return EmitTestBitBranchChained(&P, Ctx, RtOff, Bit, TgtOff, InstAddr + 4, NonZero ? 0x73 : 0x72);
+        }
+      }
       return EmitTestBitBranch(&P, RtOff, Bit, (UINT64)Target, InstAddr + 4, NonZero ? 0x73 : 0x72);
     } else if ((Inst & 0xFE000000) == 0xD6000000) {
       // BR, BLR, RET
@@ -1676,6 +1963,10 @@ STATIC UINTN DbtTranslateOne (
           DBG((DEBUG_INFO, "DBT_SYS:  MSR unknown (o0=%d o1=%d crn=%d crm=%d o2=%d)\n", Op0, Op1, CRn, CRm, Op2));
           EmitNop(&P);
         }
+        if (DBT_VERBOSE) {
+          // RAX still holds the written value in every MSR case
+          EmitTraceSys(&P, Key);
+        }
       } else {
         //
         // MRS: read system register into Xt
@@ -1722,6 +2013,10 @@ STATIC UINTN DbtTranslateOne (
         if (Known) {
           EmitLoadRax(&P, Off);
           EmitStoreRax(&P, RtOff);
+          if (DBT_VERBOSE) {
+            // RAX still holds the read value
+            EmitTraceSys(&P, Key);
+          }
         }
       }
       return (UINTN)(P - X86Buf);
@@ -2039,10 +2334,27 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
 
   // Copy ARM state into context so translated code can access it
   CopyMem(&Ctx->ArmState, ArmState, sizeof(DBT_ARM64_STATE));
+  DbtDumpState ("ENTRY", &Ctx->ArmState);
 
   // Deliver the state pointer to the translated prologue (ABI-agnostic)
   gDbtActiveState = &Ctx->ArmState;
   gDbtActiveCtx   = Ctx;
+
+  //
+  // Re-point the jump slot at the block to run: the cached block when the
+  // guest PC is already translated, otherwise the block just emitted.  The
+  // prologue then lands directly on the right code, so loop bodies execute
+  // (rather than re-translate) on every subsequent pass.
+  //
+  {
+    UINT32 TgtOff   = DbtMapLookup (Ctx, ArmState->PC);
+    UINT8  *RunStart = (TgtOff != 0xFFFFFFFF) ? ((UINT8 *)Ctx->TranslatedCode + TgtOff) : Ctx->LastBlockStart;
+
+    if (Ctx->JumpSlot != NULL && RunStart != NULL) {
+      INTN Rel = (INTN)(RunStart - (Ctx->JumpSlot + 5));
+      *(INT32 *)(Ctx->JumpSlot + 1) = (INT32)Rel;
+    }
+  }
 
   // Call translated code with &ArmState as arg (already in RBX from prologue)
   VOID (*Entry)(DBT_ARM64_STATE *) = (VOID(*)(DBT_ARM64_STATE*))Ctx->TranslatedCode;
@@ -2053,6 +2365,7 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
 
   // Copy state back
   CopyMem(ArmState, &Ctx->ArmState, sizeof(DBT_ARM64_STATE));
+  DbtDumpState ("EXIT", ArmState);
 
   DBG((DEBUG_INFO, "DBT: Execute done — PC=0x%llx X0=0x%llx PSTATE=0x%llx SP_EL0=0x%llx\n",
        ArmState->PC, ArmState->X[0], ArmState->PSTATE, ArmState->SP_EL0));
@@ -2060,6 +2373,23 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
 
 EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, UINT64 BaseAddr, VOID *X86Code) {
   if (!Ctx) return EFI_INVALID_PARAMETER;
+
+  //
+  // Block already translated: nothing to emit.  Re-point the jump slot at
+  // the cached copy so DbtExecute lands on it directly; the driver keeps
+  // calling us every iteration, and this stays a cheap no-op.
+  //
+  if (!X86Code) {
+    UINT32 CachedOff = DbtMapLookup (Ctx, BaseAddr);
+    if (CachedOff != 0xFFFFFFFF) {
+      if (Ctx->JumpSlot != NULL) {
+        INTN Rel = (INTN)((UINT8 *)Ctx->TranslatedCode + CachedOff - (Ctx->JumpSlot + 5));
+        *(INT32 *)(Ctx->JumpSlot + 1) = (INT32)Rel;
+      }
+      DBG((DEBUG_INFO, "DBT: Block 0x%llx cached — skip translation\n", BaseAddr));
+      return EFI_SUCCESS;
+    }
+  }
 
   UINT8 *Buf  = X86Code ? (UINT8 *)X86Code : (UINT8 *)Ctx->TranslatedCode + Ctx->TranslatedSize;
   UINTN Max   = X86Code ? CodeSize : Ctx->CodeCapacity - Ctx->TranslatedSize;
@@ -2082,6 +2412,22 @@ EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, U
   }
 
   Ctx->LastBlockStart = Buf;
+
+  //
+  // Register the block in the guest PC -> translated-offset cache so
+  // terminators of later blocks can chain straight into it, and DbtExecute
+  // can re-enter loop bodies without re-translating them.
+  //
+  (VOID)DbtMapInsert (Ctx, BaseAddr, (UINT32)(Buf - (UINT8 *)Ctx->TranslatedCode));
+
+  //
+  // Emit the runtime block-entry trace: guest PC is known at translation
+  // time, so the emitted code stores it and calls DbtTraceBlock, which
+  // dumps the full register file to the OpenCore log on every execution.
+  //
+  if (DBT_VERBOSE) {
+    EmitTraceBlock(&Buf, BaseAddr);
+  }
 
   // No flag setter is pending at the start of a block.
   Ctx->FlagSet.HasSetter = FALSE;
@@ -2122,12 +2468,18 @@ EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, U
   return EFI_SUCCESS;
 }
 
+BOOLEAN DbtBlockCached (DBT_CONTEXT *Ctx, UINT64 Pc) {
+  return DbtMapLookup (Ctx, Pc) != 0xFFFFFFFF;
+}
+
 VOID DbtFreeContext (DBT_CONTEXT *Ctx) {
   if (!Ctx) return;
   if (Ctx->VmContext.MemoryPool) {
     gBS->FreePages((UINTN)Ctx->VmContext.MemoryPool, Ctx->VmContext.FreePages);
   }
   if (Ctx->KernelPath) FreePool(Ctx->KernelPath);
+  if (Ctx->BlockMapPc)  FreePool(Ctx->BlockMapPc);
+  if (Ctx->BlockMapOff) FreePool(Ctx->BlockMapOff);
   gBS->FreePages((UINTN)Ctx, EFI_SIZE_TO_PAGES(sizeof(DBT_CONTEXT) + Ctx->CodeCapacity));
 }
 
@@ -2186,6 +2538,95 @@ EFI_STATUS DbtSetSegments (DBT_CONTEXT *Ctx, UINTN SegCount, UINT64 *SegVmAddr,
 //
 UINT64 DbtMapHostAddr (VOID) {
   return DbtTranslateVaToPa (gDbtActiveCtx, gDbtHelperVa);
+}
+
+//
+// =========== Runtime trace helpers ===========
+// Invoked by the translated code (no arguments, via the globals above).
+// Every line goes through DEBUG(), so it lands in the OpenCore log file
+// (opencore-*.txt) whenever the platform log target captures DEBUG_INFO.
+//
+
+STATIC BOOLEAN DbtVaInImage (UINT64 Va) {
+  DBT_CONTEXT *Ctx = gDbtActiveCtx;
+  UINTN       I;
+
+  if (Ctx == NULL) return FALSE;
+  for (I = 0; I < Ctx->SegCount; I++) {
+    if (Va >= Ctx->SegVmAddr[I] && Va < Ctx->SegVmAddr[I] + Ctx->SegVmSize[I]) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+STATIC VOID DbtDumpState (IN CONST CHAR8 *Tag, IN DBT_ARM64_STATE *S) {
+  if (!DBT_VERBOSE || S == NULL) return;
+
+  DBG((DEBUG_INFO, "DBT_REG: %s pc=0x%llx sp=0x%llx pst=0x%llx"
+       " x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx\n",
+       Tag, S->PC, S->SP, S->PSTATE,
+       S->X[0], S->X[1], S->X[2], S->X[3]));
+  DBG((DEBUG_INFO, "DBT_REG: %s x4=0x%llx x5=0x%llx x6=0x%llx x7=0x%llx"
+       " x8=0x%llx x9=0x%llx x10=0x%llx x11=0x%llx\n",
+       Tag,
+       S->X[4], S->X[5], S->X[6], S->X[7],
+       S->X[8], S->X[9], S->X[10], S->X[11]));
+  DBG((DEBUG_INFO, "DBT_REG: %s x12=0x%llx x13=0x%llx x14=0x%llx x15=0x%llx"
+       " x16=0x%llx x17=0x%llx x18=0x%llx x19=0x%llx\n",
+       Tag,
+       S->X[12], S->X[13], S->X[14], S->X[15],
+       S->X[16], S->X[17], S->X[18], S->X[19]));
+  DBG((DEBUG_INFO, "DBT_REG: %s x20=0x%llx x21=0x%llx x22=0x%llx x23=0x%llx"
+       " x24=0x%llx x25=0x%llx x26=0x%llx x27=0x%llx\n",
+       Tag,
+       S->X[20], S->X[21], S->X[22], S->X[23],
+       S->X[24], S->X[25], S->X[26], S->X[27]));
+  DBG((DEBUG_INFO, "DBT_REG: %s x28=0x%llx fp=0x%llx lr=0x%llx"
+       " sctlr=0x%llx ttbr0=0x%llx ttbr1=0x%llx tcr=0x%llx mair=0x%llx\n",
+       Tag,
+       S->X[28], S->X[29], S->X[30],
+       S->SCTLR_EL1, S->TTBR0_EL1, S->TTBR1_EL1, S->TCR_EL1, S->MAIR_EL1));
+}
+
+VOID DbtTraceBlock (VOID) {
+  if (!DBT_VERBOSE) return;
+  DbtDumpState ("BLK", gDbtActiveState);
+}
+
+VOID DbtTraceMemSt (VOID) {
+  UINT64 Va, Val;
+
+  if (!DBT_VERBOSE) return;
+  Va  = gDbtTraceVa;
+  Val = gDbtTraceVal;
+
+  DBG((DEBUG_INFO, "DBT_MEM: ST  size=%u va=0x%llx val=0x%llx%s\n",
+       (1u << gDbtTraceSize) >> 1, Va, Val, DbtVaInImage(Va) ? "" : " MMIO"));
+
+  //
+  // Kernel console capture: byte-wide stores outside the kernel image are
+  // MMIO writes (e.g. UART TX).  Render them as characters so kernel
+  // printk output shows up verbatim in the OpenCore log.
+  //
+  if (gDbtTraceSize == 0 && !DbtVaInImage(Va)) {
+    CHAR8 Ch = (CHAR8)(Val & 0xFF);
+    DBG((DEBUG_INFO, "DBT_UART: [0x%llx] -> '%c' (0x%02x)%s\n",
+         Va, (Ch >= 0x20 && Ch < 0x7F) ? Ch : '.', (UINT8)Ch,
+         (Ch >= 0x20 && Ch < 0x7F) ? "" : " non-printable"));
+  }
+}
+
+VOID DbtTraceMemLd (VOID) {
+  if (!DBT_VERBOSE) return;
+  DBG((DEBUG_INFO, "DBT_MEM: LD  size=%u va=0x%llx val=0x%llx%s\n",
+       (1u << gDbtTraceSize) >> 1, gDbtTraceVa, gDbtTraceVal,
+       DbtVaInImage(gDbtTraceVa) ? "" : " MMIO"));
+}
+
+VOID DbtTraceSys (VOID) {
+  if (!DBT_VERBOSE) return;
+  DBG((DEBUG_INFO, "DBT_SYS: key=0x%llx val=0x%llx\n", gDbtTraceSys, gDbtTraceVal));
 }
 
 /**
