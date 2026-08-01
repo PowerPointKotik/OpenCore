@@ -90,7 +90,11 @@ Arm64DecodeBitMasks (
   if (Pattern == 0 || Pattern == 1) {
     return FALSE;
   }
-  Length = 31 - (UINT32)__builtin_clz(Pattern);
+  Length = 0;
+  while (Pattern != 1) {
+    Pattern >>= 1;
+    Length++;
+  }
   Esize  = 1u << Length;
 
   Levels = (1u << Length) - 1;
