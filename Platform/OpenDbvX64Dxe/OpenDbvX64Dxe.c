@@ -622,6 +622,10 @@ DirectLoadKernel (
   UINTN                            Index;
   MACH_LOAD_COMMAND                *Cmd;
   MACH_HEADER_64                   *Header64;
+  UINT64                           SegVmAddr[32];
+  UINT64                           SegVmSize[32];
+  UINT64                           SegFileOff[32];
+  UINTN                            SegCount       = 0;
   EFI_HANDLE                       Device;
   CONST CHAR16                     *KernelPath;
 
@@ -984,6 +988,15 @@ SKIP_READ_APPLE_KERNEL:
           Remaining -= 8 + Count * 4;
         }
         break;
+      } else if (Cmd->CommandType == MACH_LOAD_COMMAND_SEGMENT_64) {
+        MACH_SEGMENT_COMMAND_64  *Seg64 = (MACH_SEGMENT_COMMAND_64 *)Cmd;
+
+        if (SegCount < ARRAY_SIZE (SegVmAddr)) {
+          SegVmAddr[SegCount]  = Seg64->VirtualAddress;
+          SegVmSize[SegCount]  = Seg64->Size;
+          SegFileOff[SegCount] = Seg64->FileOffset;
+          SegCount++;
+        }
       } else if (Cmd->CommandType == 0x80000028U) {  // LC_MAIN
         //
         // entry_point_command: cmd(4) + cmdsize(4) + entryoff(8) + stacksize(8)
@@ -1072,25 +1085,63 @@ SKIP_READ_APPLE_KERNEL:
     //
     // Dispatch loop: translate the straight-line block ending at the next
     // PC-updating branch, execute it, and continue from the resulting PC.
-    // The kernel image is linked at KernelVaBase and loaded at KernelBuffer.
+    // The kernel image is linked at the lowest segment vmaddr and loaded at
+    // KernelBuffer; the entry point (LC_UNIXTHREAD pc) points at the start
+    // of the entry segment (e.g. __TEXT_BOOT_EXEC), which lives at a
+    // nonzero file offset, so VA->file-offset mapping goes through the
+    // LC_SEGMENT_64 table rather than assuming entry == image base.
     //
     KernelVaBase = EntryPoint;
-    KernelVaEnd  = EntryPoint + KernelSize;
+    for (Index = 0; Index < SegCount; Index++) {
+      if (SegVmAddr[Index] < KernelVaBase) {
+        KernelVaBase = SegVmAddr[Index];
+      }
+    }
+    KernelVaEnd  = KernelVaBase + KernelSize;
     MaxSteps     = 0x4000000;  // safety valve
+
+    DEBUG ((DEBUG_INFO, "DirectKernel: %u segments, image base=0x%llx end=0x%llx\n",
+            SegCount, KernelVaBase, KernelVaEnd));
 
     for (Steps = 0;
          Steps < MaxSteps &&
          ArmContext.PC >= KernelVaBase &&
          ArmContext.PC <  KernelVaEnd;
          Steps++) {
-      UINTN  Pa;
-      UINT32 Inst;
-      UINTN  Off;
+      UINTN   Pa       = 0;
+      UINTN   FileOff  = 0;
+      BOOLEAN Mapped   = FALSE;
+      UINT32  Inst;
+      UINTN   Off;
 
-      Pa  = (UINTN)((UINT8 *)KernelBuffer + (UINTN)(ArmContext.PC - KernelVaBase));
+      for (Index = 0; Index < SegCount; Index++) {
+        if (ArmContext.PC >= SegVmAddr[Index] &&
+            ArmContext.PC <  SegVmAddr[Index] + SegVmSize[Index]) {
+          FileOff = (UINTN)(SegFileOff[Index] + (ArmContext.PC - SegVmAddr[Index]));
+          Mapped  = TRUE;
+          break;
+        }
+      }
+
+      if (Mapped) {
+        Pa = (UINTN)((UINT8 *)KernelBuffer + FileOff);
+      } else if (SegCount == 0) {
+        // No segment table (legacy image): fall back to a contiguous mapping.
+        Pa = (UINTN)((UINT8 *)KernelBuffer + (UINTN)(ArmContext.PC - KernelVaBase));
+      } else {
+        DEBUG ((DEBUG_INFO, "DirectKernel: kernel left image range at PC=0x%llx after %u steps\n",
+                ArmContext.PC, Steps));
+        break;
+      }
+
+      if (FileOff >= KernelSize) {
+        DEBUG ((DEBUG_INFO, "DirectKernel: kernel ran off the image at PC=0x%llx\n", ArmContext.PC));
+        break;
+      }
+
       Off = 0;
       for (;;) {
-        if (Off + 4 > KernelSize) {
+        if (Off + 4 > KernelSize - FileOff) {
           break;
         }
         Inst = *(UINT32 *)(Pa + Off);
@@ -1100,7 +1151,7 @@ SKIP_READ_APPLE_KERNEL:
         Off += 4;
       }
 
-      if (Off + 4 > KernelSize) {
+      if (Off + 4 > KernelSize - FileOff) {
         DEBUG ((DEBUG_INFO, "DirectKernel: kernel ran off the image at PC=0x%llx\n", ArmContext.PC));
         break;
       }
