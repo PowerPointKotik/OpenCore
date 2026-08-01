@@ -25,6 +25,14 @@
 #endif
 
 //
+// State pointer for the translated prologue.  Delivered through a module
+// global instead of a calling-convention argument register so the emitted
+// code works regardless of the firmware toolchain ABI (MS x64: RCX,
+// SysV: RDI).  Set by DbtExecute immediately before each Entry call.
+//
+STATIC DBT_ARM64_STATE *gDbtActiveState = NULL;
+
+//
 // =========== ARM64 instruction decode helpers ===========
 //
 STATIC UINT32 Arm64Op0 (UINT32 Inst) { return (Inst >> 25) & 0xF; }
@@ -200,8 +208,9 @@ STATIC UINTN EmitPrologue (UINT8 **P) {
   // sub rsp, 0x100 (shadow space + alignment)
   EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xEC);
   EmitDword(P, 0x100);
-  // RBX = RCX (first arg = DBT_ARM64_STATE*, MS x64 ABI used by UEFI)
-  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xCB);  // mov rbx, rcx
+  // RBX = &Ctx->ArmState, loaded via the module global (ABI-agnostic)
+  EmitMovImm(P, (UINT64)(UINTN)&gDbtActiveState);  // mov rax, &gDbtActiveState
+  EmitRexW(P); EmitByte(P, 0x8B); EmitByte(P, 0x18);  // mov rbx, [rax]
   // DIAGNOSTIC: write exec marker into SP_EL0 (offset 0x110)
   EmitByte(P, 0xB8); EmitDword(P, 0xCAFEBABE);  // mov eax, marker (zero-extends)
   EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x83);         // mov [rbx+disp32], eax
@@ -1150,8 +1159,43 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
   DBG((DEBUG_INFO, "DBT: Execute entry=0x%llx SP=0x%llx code=%p size=%u\n",
            ArmState->PC, ArmState->SP, Ctx->TranslatedCode, Ctx->TranslatedSize));
 
+  {
+    //
+    // DIAGNOSTIC: print the EFI memory descriptor covering the translated
+    // code buffer so we can see whether the firmware marks it executable.
+    //
+    EFI_MEMORY_DESCRIPTOR *Map    = NULL;
+    UINTN                 MapSize = 0, MapKey, DescSize;
+    UINT32                DescVer;
+    EFI_STATUS            MStatus = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVer);
+
+    if (MStatus == EFI_BUFFER_TOO_SMALL) {
+      Map = AllocatePool (MapSize + DescSize);
+      if (Map) {
+        MStatus = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVer);
+        if (!EFI_ERROR (MStatus)) {
+          for (UINTN I = 0; I < MapSize / DescSize; I++) {
+            EFI_MEMORY_DESCRIPTOR *D = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)Map + I * DescSize);
+            UINTN Start = D->PhysicalStart;
+            UINTN End   = Start + (D->NumberOfPages << 12);
+            if ((UINTN)Ctx->TranslatedCode >= Start && (UINTN)Ctx->TranslatedCode < End) {
+              DBG((DEBUG_INFO, "DBT: code buffer type=0x%x attrs=0x%llx%s\n",
+                   D->Type, (UINT64)D->Attribute,
+                   (D->Attribute & EFI_MEMORY_XP) ? " XP-SET" : " executable"));
+              break;
+            }
+          }
+        }
+        FreePool (Map);
+      }
+    }
+  }
+
   // Copy ARM state into context so translated code can access it
   CopyMem(&Ctx->ArmState, ArmState, sizeof(DBT_ARM64_STATE));
+
+  // Deliver the state pointer to the translated prologue (ABI-agnostic)
+  gDbtActiveState = &Ctx->ArmState;
 
   // Call translated code with &ArmState as arg (already in RBX from prologue)
   VOID (*Entry)(DBT_ARM64_STATE *) = (VOID(*)(DBT_ARM64_STATE*))Ctx->TranslatedCode;
