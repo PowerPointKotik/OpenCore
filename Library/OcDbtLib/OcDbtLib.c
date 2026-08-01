@@ -830,7 +830,7 @@ STATIC UINTN DbtTranslateOne (
       return EmitCondBranch(&P, Cond, (UINT64)Target, InstAddr + 4);
     } else if ((Inst & 0x7C000000) == 0x14000000) {
       // Unconditional branch B / BL
-      INT64  Off    = ((Inst >> 5) & 0x3FFFFFF) << 2;
+      INT64  Off    = ((INT64)(Inst & 0x03FFFFFF) << 2);  // imm26 = bits [25:0]
       INT64  Target = InstAddr + ((Off << 36) >> 36);  // sign-extend 26-bit
       BOOLEAN WithLink = ((Inst >> 31) & 1) != 0;
 
