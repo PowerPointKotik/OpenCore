@@ -604,11 +604,12 @@ if [ "$(unamer)" = "Windows" ]; then
    # Incorrect diagnostic due to action.
    # REF: https://github.com/koalaman/shellcheck/wiki/SC2035
    # shellcheck disable=SC2035
-   VS2022_DIR="$(find * -maxdepth 0 -type d -print -quit)"
+   VS2022_DIR="$(find * -maxdepth 0 -type d -print | sort -r | head -1)"
    if [ "${VS2022_DIR}" = "" ]; then
      echo "No VS2022 MSVC compiler"
      exit 1
    fi
+   echo "Selected MSVC version: ${VS2022_DIR}"
    cd - || exit 1
    export VS2022_PREFIX="${VS2022_BASEPREFIX}${VS2022_DIR}\\"
    WINSDK_BASE="/c/Program Files (x86)/Windows Kits/10/bin"
