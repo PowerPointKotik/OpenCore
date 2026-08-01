@@ -185,8 +185,8 @@ STATIC UINTN EmitPrologue (UINT8 **P) {
   // sub rsp, 0x100 (shadow space + alignment)
   EmitRexW(P); EmitByte(P, 0x81); EmitByte(P, 0xEC);
   EmitDword(P, 0x100);
-  // RBX = RDI (first arg = DBT_ARM64_STATE*)
-  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xFB);  // mov rbx, rdi
+  // RBX = RCX (first arg = DBT_ARM64_STATE*, MS x64 ABI used by UEFI)
+  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xCB);  // mov rbx, rcx
   return (UINTN)(*P - Start);
 }
 
@@ -968,7 +968,7 @@ EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, U
     // end of the JMP instruction.
     //
     INTN Rel = (INTN)(Ctx->LastBlockStart - (Ctx->JumpSlot + 5));
-    *(INT32 *)Ctx->JumpSlot = (INT32)Rel;
+    *(INT32 *)(Ctx->JumpSlot + 1) = (INT32)Rel;
     DBG((DEBUG_INFO, "DBT: Jump slot -> %p (rel 0x%x)\n", Ctx->LastBlockStart, (UINT32)Rel));
   }
 
