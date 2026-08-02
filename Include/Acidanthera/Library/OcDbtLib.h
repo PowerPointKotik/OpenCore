@@ -9,6 +9,8 @@
 
 #include <Uefi.h>
 
+#define DBT_MAX_PHYS_WINDOWS  4
+
 /**
   ARM64 CPU state for translation. Registers stored in memory for save/restore.
   XZR (register 31) always reads as 0 and ignores writes.

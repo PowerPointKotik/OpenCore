@@ -2738,12 +2738,15 @@ UINT64 DbtTranslateVaToPa (DBT_CONTEXT *Ctx, UINT64 Va) {
     // x86 firmware's own low pages, whose bytes are unrelated garbage that
     // the kernel then treats as a pointer (e.g. the hanging 0x1C0 reads).
     //
-    if (Ctx->PhysWinBuffer != NULL
-        && Va >= Ctx->PhysWinBase
-        && Va < Ctx->PhysWinBase + Ctx->PhysWinSize) {
-      DBG((DEBUG_INFO, "DBT_MMU: VA 0x%llx phys window -> host 0x%llx\n",
-           Va, (UINT64)(UINTN)(Ctx->PhysWinBuffer + (Va - Ctx->PhysWinBase))));
-      return (UINT64)(UINTN)(Ctx->PhysWinBuffer + (Va - Ctx->PhysWinBase));
+    for (UINTN W = 0; W < Ctx->PhysWinCount; W++) {
+      if (Ctx->PhysWinBuffer[W] != NULL
+          && Va >= Ctx->PhysWinBase[W]
+          && Va < Ctx->PhysWinBase[W] + Ctx->PhysWinSize[W]) {
+        DBG((DEBUG_INFO, "DBT_MMU: VA 0x%llx phys window[%u] -> host 0x%llx\n",
+             Va, W,
+             (UINT64)(UINTN)(Ctx->PhysWinBuffer[W] + (UINTN)(Va - Ctx->PhysWinBase[W]))));
+        return (UINT64)(UINTN)(Ctx->PhysWinBuffer[W] + (UINTN)(Va - Ctx->PhysWinBase[W]));
+      }
     }
   }
 
@@ -2755,13 +2758,17 @@ EFI_STATUS DbtSetPhysWindow (DBT_CONTEXT *Ctx, UINT64 Base, UINTN Size, VOID *Bu
   if (Ctx == NULL || (Size != 0 && Buffer == NULL)) {
     return EFI_INVALID_PARAMETER;
   }
+  if (Ctx->PhysWinCount >= DBT_MAX_PHYS_WINDOWS) {
+    return EFI_OUT_OF_RESOURCES;
+  }
 
-  Ctx->PhysWinBase   = Base;
-  Ctx->PhysWinSize   = Size;
-  Ctx->PhysWinBuffer = (UINT8 *)Buffer;
+  Ctx->PhysWinBase[Ctx->PhysWinCount]   = Base;
+  Ctx->PhysWinSize[Ctx->PhysWinCount]   = Size;
+  Ctx->PhysWinBuffer[Ctx->PhysWinCount] = (UINT8 *)Buffer;
+  Ctx->PhysWinCount++;
 
-  DBG((DEBUG_INFO, "DBT_MMU: phys window base=0x%llx sz=0x%x host=%p\n",
-       Base, (UINT32)Size, Buffer));
+  DBG((DEBUG_INFO, "DBT_MMU: phys window[%u] base=0x%llx sz=0x%x host=%p\n",
+       Ctx->PhysWinCount - 1, Base, (UINT32)Size, Buffer));
   return EFI_SUCCESS;
 }
 

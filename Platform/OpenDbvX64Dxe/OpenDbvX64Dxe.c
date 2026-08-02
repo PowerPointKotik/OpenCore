@@ -1466,6 +1466,41 @@ SKIP_READ_APPLE_KERNEL:
     }
 
     //
+    // Host-backed staging window for the kernel's high "physical" handles.
+    // The boot code reads/dereferences a DRAM pointer at 0x4000000000
+    // (observed as 0x4000020000) to locate its early physical region; when
+    // no segment maps it DBT identity-maps the VA straight onto the x86
+    // firmware address space where it is inaccessible and the boot hangs
+    // (the same class of failure as the low 0x1C0 window fixed earlier).
+    // Allocate a zeroed staging buffer at that handle so the kernel has a
+    // deterministic region to poke at while it builds its own tables.
+    //
+    {
+      UINT64 DramWinBase = 0x4000000000ULL;
+      UINTN  DramWinSize = EFI_PAGES_TO_SIZE (1024);  // 4MB staging
+      UINT8 *DramWinBuffer;
+      Status = gBS->AllocatePages (
+                      AllocateAnyPages,
+                      EfiLoaderData,
+                      EFI_SIZE_TO_PAGES (DramWinSize),
+                      (EFI_PHYSICAL_ADDRESS *)&DramWinBuffer
+                      );
+      if (!EFI_ERROR (Status)) {
+        ZeroMem (DramWinBuffer, DramWinSize);
+        DEBUG ((DEBUG_INFO, "DirectKernel: dram window allocated host=%p base=0x%llx sz=0x%x\n",
+                DramWinBuffer, DramWinBase, DramWinSize));
+
+        if (EFI_ERROR (DbtSetPhysWindow (gDbtContext, DramWinBase, DramWinSize, DramWinBuffer))) {
+          DEBUG ((DEBUG_ERROR, "DirectKernel: dram window set failed\n"));
+          gBS->FreePages ((EFI_PHYSICAL_ADDRESS)(UINTN)DramWinBuffer,
+                          EFI_SIZE_TO_PAGES (DramWinSize));
+        }
+      } else {
+        DEBUG ((DEBUG_WARN, "DirectKernel: dram staging alloc failed - %r\n", Status));
+      }
+    }
+
+    //
     // Populate the per-CPU data entries handoff table that xnu's boot code
     // scans (iBoot would normally fill it); without this the kernel reads
     // stale file data and faults dereferencing it.
