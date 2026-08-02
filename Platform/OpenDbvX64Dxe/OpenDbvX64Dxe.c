@@ -596,6 +596,148 @@ CreateMinimalDeviceTree (
   return EFI_SUCCESS;
 }
 
+//
+// xnu's arm64 boot code (osfmk/arm64/start.s) scans a per-CPU data entries
+// table that the bootloader is expected to have populated before jumping to
+// the kernel:
+//
+//   mrs  x15, mpidr_el1
+//   and  x0, x15, #0xff
+//   adr  x1, <entries table>
+//   add  x1, x1, #<pageoff>
+//   ...
+//   ldr  x21, [x1, #8]              // per-CPU data address of the entry
+//   cbz  x21, .                     // spin forever if not set up
+//   ldr  w2, [x21, #0x1c8]          // CPU_PHYS_ID
+//   cmp  x0, x2
+//   b.eq <found>
+//
+// On real hardware iBoot fills the table before starting the kernel; with a
+// direct load the slots contain file data (observed: 0x201FD503201FD503),
+// which makes the kernel dereference garbage and fault.  We locate the table
+// by decoding the ADR/ADD pair right after the MRS/AND prologue and write a
+// host pointer to a zeroed per-CPU data area.  The DBT identity-maps guest
+// VAs outside the kernel image, so the translated loads use the host pointer
+// as-is.
+//
+STATIC
+UINT8 *
+SetupCpuDataEntries (
+  IN UINT8   *KernelBuffer,
+  IN UINTN   SegCount,
+  IN UINT64  *SegVmAddr,
+  IN UINT64  *SegVmSize,
+  IN UINT64  *SegFileOff,
+  IN UINT64  EntryPoint
+  )
+{
+  UINTN   I;
+  UINTN   J;
+  UINTN   K;
+  UINTN   L;
+  UINTN   FirstSeg;
+  UINT8   *CpuData = NULL;
+
+  if (SegCount == 0) {
+    return NULL;
+  }
+
+  FirstSeg = 0;
+  for (I = 0; I < SegCount; I++) {
+    if (EntryPoint >= SegVmAddr[I] && EntryPoint < SegVmAddr[I] + SegVmSize[I]) {
+      FirstSeg = I;
+      break;
+    }
+  }
+
+  for (K = 0; K < 2 && CpuData == NULL; K++) {
+    UINTN  SegStart = K == 0 ? FirstSeg : 0;
+    UINTN  SegEnd   = K == 0 ? FirstSeg + 1 : SegCount;
+
+    for (I = SegStart; I < SegEnd && CpuData == NULL; I++) {
+      UINT8  *Seg = KernelBuffer + SegFileOff[I];
+      UINTN  Len  = (UINTN)SegVmSize[I];
+
+      for (J = 0; J + 16 <= Len && CpuData == NULL; J += 4) {
+        UINT32  Inst;
+        UINT64  Pc;
+        UINT64  Addr;
+        UINT64  TableVa;
+        UINT64  Imm;
+        UINT8   *HostTable;
+
+        if (*(UINT32 *)(Seg + J) != 0xD53800AF) {          // mrs x15, mpidr_el1
+          continue;
+        }
+        if (*(UINT32 *)(Seg + J + 4) != 0x92403DE0) {      // and x0, x15, #0xff
+          continue;
+        }
+        Inst = *(UINT32 *)(Seg + J + 8);
+        if ((Inst & 0x1F000000) != 0x10000000 ||           // adr/adrp x1
+            (Inst & 0x1F) != 1) {
+          continue;
+        }
+        Pc   = SegVmAddr[I] + J;
+        Imm  = (((UINT64)((Inst >> 5) & 0x7FFFF)) << 2) | ((UINT64)((Inst >> 29) & 3));
+        if (Imm & (1ULL << 20)) {
+          Imm |= ~((UINT64)0x1FFFFF);
+        }
+        if ((Inst >> 24) & 1) {                            // adrp
+          Addr = (Pc + (Imm << 12)) & ~((UINT64)0xFFF);
+        } else {
+          Addr = Pc + Imm;
+        }
+        Inst = *(UINT32 *)(Seg + J + 12);
+        if ((Inst & 0xFF800000) != 0x91000000 ||           // add x1, x1, #imm
+            (Inst & 0x3FF) != 0x21) {
+          continue;
+        }
+        TableVa = Addr + ((Inst >> 10) & 0xFFF);
+
+        HostTable = NULL;
+        for (L = 0; L < SegCount; L++) {
+          if (TableVa >= SegVmAddr[L] && TableVa < SegVmAddr[L] + SegVmSize[L]) {
+            HostTable = KernelBuffer + SegFileOff[L] + (TableVa - SegVmAddr[L]);
+            break;
+          }
+        }
+        if (HostTable == NULL) {
+          break;
+        }
+
+        CpuData = AllocateZeroPool (0x4000);
+        if (CpuData == NULL) {
+          DEBUG ((DEBUG_ERROR, "DirectKernel: failed to allocate per-CPU data\n"));
+          return NULL;
+        }
+
+        //
+        // CPU_PHYS_ID at +0x1C8 must match MPIDR_EL1 & 0xff (= 0 with the
+        // virtual MPIDR reported by the DBT); the buffer is zeroed already.
+        //
+        *(UINT32 *)(CpuData + 0x1C8) = 0;
+
+        //
+        // Write the handoff: entry[0] carries the per-CPU data address (the
+        // kernel reads the +8 slot), and the remaining 31 entries are cleared
+        // so the scan cannot dereference stale file data.
+        //
+        *(UINT64 *)(HostTable + 0) = (UINT64)(UINTN)CpuData;
+        *(UINT64 *)(HostTable + 8) = (UINT64)(UINTN)CpuData;
+        ZeroMem (HostTable + 16, 32 * 16 - 16);
+
+        DEBUG ((DEBUG_INFO, "DirectKernel: cpu data entries table va=0x%llx host=%p\n",
+                TableVa, HostTable));
+        DEBUG ((DEBUG_INFO, "DirectKernel: per-CPU data host=%p phys-id=%u\n",
+                CpuData, *(UINT32 *)(CpuData + 0x1C8)));
+        break;
+      }
+    }
+  }
+
+  return CpuData;
+}
+
 STATIC
 EFI_STATUS
 DirectLoadKernel (
@@ -1104,6 +1246,11 @@ SKIP_READ_APPLE_KERNEL:
 
     ZeroMem (&ArmContext, sizeof (ArmContext));
     ArmContext.X[0] = (UINT64)(UINTN)BootArgs;
+    //
+    // xnu's _start (osfmk/arm64/start.s) copies x3 into x20 before using the
+    // boot args, so hand the pointer over in both registers.
+    //
+    ArmContext.X[3] = (UINT64)(UINTN)BootArgs;
     ArmContext.SP   = (UINT64)(UINTN)(StackBuffer + StackSize);
     ArmContext.PC   = EntryPoint;
     ArmContext.SPSR_EL1 = 0x5;  // EL1 with all exceptions masked
@@ -1146,6 +1293,14 @@ SKIP_READ_APPLE_KERNEL:
       FreePool (KernelBuffer);
       return EFI_INVALID_PARAMETER;
     }
+
+    //
+    // Populate the per-CPU data entries handoff table that xnu's boot code
+    // scans (iBoot would normally fill it); without this the kernel reads
+    // stale file data and faults dereferencing it.
+    //
+    SetupCpuDataEntries (KernelBuffer, SegCount, SegVmAddr, SegVmSize,
+                         SegFileOff, EntryPoint);
 
     DEBUG ((DEBUG_INFO, "DirectKernel: dispatch start pc=0x%llx maxsteps=%u\n",
             ArmContext.PC, MaxSteps));
