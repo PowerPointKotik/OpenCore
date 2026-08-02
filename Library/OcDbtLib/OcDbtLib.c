@@ -82,7 +82,26 @@ STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|cr
 //
 #define DBT_FULL_VERBOSE  0
 
+//
+// DBT_RUNTIME_VERBOSE: verbose per-execution runtime trace of the translated
+// kernel.  Every executed block (cached or fresh) is sampled: a short DBT_RUN
+// line with pc/lr/x0/x22, plus a full register dump every few samples.
+// Block execution under DBT runs at roughly 10-20/s, so per-execution detail
+// fits the 256 KB capture for the whole boot.  The sample divisor adapts: if
+// a cached loop ever runs fast enough to exceed the line budget, sampling is
+// coarsened to protect the log, and restored when the rate drops.
+//
+#define DBT_RUNTIME_VERBOSE  1
+#define DBT_RUN_ADAPT_AFTER  256    // executions between adaptation steps
+#define DBT_RUN_MAX_LINES    48     // line budget per adaptation window
+#define DBT_RUN_MIN_DIV      1      // sample every Nth execution
+#define DBT_RUN_MAX_DIV      4096
+
 STATIC BOOLEAN      gDbtTraceEnabled = TRUE;
+STATIC UINT64       gDbtRunSeq   = 0;   // total block executions
+STATIC UINT32       gDbtRunDiv   = DBT_RUN_MIN_DIV;
+STATIC UINT32       gDbtRunSteps = 0;   // executions since last adaptation
+STATIC UINT32       gDbtRunLines = 0;   // lines emitted since last adaptation
 
 //
 // Fresh-block marker.  The driver calls DbtTranslateBlock (which registers
@@ -2579,7 +2598,9 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
 
   // Copy ARM state into context so translated code can access it
   CopyMem(&Ctx->ArmState, ArmState, sizeof(DBT_ARM64_STATE));
-  DbtDumpState ("ENTRY", &Ctx->ArmState);
+  if (gDbtTraceEnabled) {
+    DbtDumpState ("ENTRY", &Ctx->ArmState);
+  }
 
   // Deliver the state pointer to the translated prologue (ABI-agnostic)
   gDbtActiveState = &Ctx->ArmState;
@@ -2626,7 +2647,9 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
     gDbtSpinPc   = 0;
   }
 
-  DbtDumpState ("EXIT", ArmState);
+  if (gDbtTraceEnabled) {
+    DbtDumpState ("EXIT", ArmState);
+  }
 }
 
 EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, UINT64 BaseAddr, VOID *X86Code) {
@@ -2882,14 +2905,14 @@ STATIC BOOLEAN DbtVaInImage (UINT64 Va) {
 }
 
 //
-// Full register dump.  Called from the host side only, and only when
-// gDbtTraceEnabled is up (first execution of a block), so the log volume
-// stays bounded.  Lines are kept short — the firmware log capture drops
-// bytes on long lines (observed: 100+ byte DBT lines come back mangled),
-// so four registers per line, ~60 chars each.
+// Full register dump.  Lines are kept short — the firmware log capture
+// drops bytes on long lines (observed: 100+ byte DBT lines come back
+// mangled), so four registers per line, ~60 chars each.  Callers decide
+// whether the dump is gated (first-execution trace, ENTRY/EXIT) or not
+// (DBT_RUN runtime trace).
 //
 STATIC VOID DbtDumpState (IN CONST CHAR8 *Tag, IN DBT_ARM64_STATE *S) {
-  if (!gDbtTraceEnabled || S == NULL) return;
+  if (S == NULL) return;
 
   DBG((DEBUG_INFO, "DBT_REG: %s pc=0x%llx sp=0x%llx pst=0x%llx\n",
        Tag, S->PC, S->SP, S->PSTATE));
@@ -2914,6 +2937,36 @@ STATIC VOID DbtDumpState (IN CONST CHAR8 *Tag, IN DBT_ARM64_STATE *S) {
 }
 
 VOID DbtTraceBlock (VOID) {
+  //
+  // Verbose runtime trace (never gated by the first-execution gate): sample
+  // every executed block — cached loop bodies included.  The divisor adapts
+  // to keep the line rate within the log budget; DBT_RUN lines are ~95 chars
+  // and survive the firmware log capture, and a full DBT_REG dump rides
+  // along every 8th sample for complete register state at that point.
+  //
+  if (DBT_RUNTIME_VERBOSE && gDbtActiveState != NULL) {
+    gDbtRunSeq++;
+    gDbtRunSteps++;
+    if ((gDbtRunSeq % gDbtRunDiv) == 0) {
+      gDbtRunLines++;
+      DBG((DEBUG_INFO, "DBT_RUN: pc=0x%llx lr=0x%llx x0=0x%llx x22=0x%llx\n",
+           gDbtTracePc, gDbtActiveState->X[30],
+           gDbtActiveState->X[0], gDbtActiveState->X[22]));
+      if ((gDbtRunLines & 7) == 0) {
+        DbtDumpState ("RT", gDbtActiveState);
+      }
+    }
+    if (gDbtRunSteps >= DBT_RUN_ADAPT_AFTER) {
+      if (gDbtRunLines > DBT_RUN_MAX_LINES) {
+        gDbtRunDiv = (gDbtRunDiv >= DBT_RUN_MAX_DIV) ? DBT_RUN_MAX_DIV : (gDbtRunDiv * 2);
+      } else if ((gDbtRunLines < (DBT_RUN_MAX_LINES / 4)) && (gDbtRunDiv > DBT_RUN_MIN_DIV)) {
+        gDbtRunDiv /= 2;
+      }
+      gDbtRunSteps = 0;
+      gDbtRunLines = 0;
+    }
+  }
+
   //
   // Lightweight (never gated by the verbose trace): spy on the kvprintf
   // format dispatch block so the '%s' conversion index stays decodable
