@@ -30,6 +30,7 @@
 #include <Library/OcCompressionLib/zlib/zlib.h>
 
 #include <Protocol/OcBootEntry.h>
+#include <Protocol/OcLog.h>
 #include <Protocol/SimpleFileSystem.h>
 
 //
@@ -2065,6 +2066,27 @@ OpenDbvX64EntryPoint (
   EFI_STATUS  Status;
 
   DEBUG ((DEBUG_INFO, "DBT: entry image=%p st=%p\n", ImageHandle, SystemTable));
+
+  //
+  // Raise the on-screen log level so the full verbose DBT trace (DEBUG_INFO)
+  // is printed to the console as well as the serial/file log.  This keeps the
+  // runtime trace visible on screen during the boot picker and the
+  // "macOS Installer (Translated)" direct kernel run regardless of the
+  // Logging/DisplayLevel setting in config.plist.
+  //
+  {
+    OC_LOG_PROTOCOL  *OcLog;
+
+    Status = gBS->LocateProtocol (&gOcLogProtocolGuid, NULL, (VOID **)&OcLog);
+    if (!EFI_ERROR (Status) && OcLog != NULL) {
+      OcLog->DisplayLevel = 0x7FFFFFFF;
+      OcLog->Options     |= OC_LOG_CONSOLE;
+      OcLog->DisplayDelay = 0;
+      DEBUG ((DEBUG_INFO, "DBT: on-screen log level raised to 0x7FFFFFFF\n"));
+    } else {
+      DEBUG ((DEBUG_WARN, "DBT: OcLog protocol not found, screen trace unavailable\n"));
+    }
+  }
 
   Status = DbtInitContext (&gDbtContext, 0x100000);
   if (EFI_ERROR (Status)) {
