@@ -1838,23 +1838,31 @@ STATIC UINTN DbtTranslateOne (
                  (Rn == 31 && Rm == 31) ? " (cset/cinc alias)" : ""));
 
         // Default (cond FALSE): Rm, transformed by the op.
+        // The default store is deferred until after the condition branch:
+        // when Rd == Rn (e.g. csneg x16, x16, xzr, ls) a premature store
+        // would clobber the operand both the flag recompute and the true
+        // arm read, forcing x16 to the default value on every path.
+        UINT8  *Lfalse = NULL;
+        UINT8  *Ldef   = NULL;
+
+        if (Ctx->FlagSet.HasSetter) {
+          EmitComputeFlagsFromSet (&Q, &Ctx->FlagSet);
+          EmitJccSlot(&Q, CondJccTrue[Cond], &Ltrue);
+        } else {
+          EmitByte(&Q, 0x8A); EmitByte(&Q, 0x83); EmitDword(&Q, (UINT32)(PstateOff() + 3));
+          EmitCondTrueFromPstate (&Q, Cond, &Lfalse);
+          EmitJccSlot(&Q, 0xEB, &Ltrue);
+        }
+
+        // Cond FALSE: Rm, transformed by the op.
+        Ldef = Q;
         if (Rm == 31) { EmitMovImm(&Q, 0); } else { EmitLoadRax(&Q, (UINT32)ArmRegXOff(Rm)); }
         if (IsW) EmitTrunc32(&Q);
         if (IsInv) { EmitNotRax(&Q); }
         if (IsInc) { EmitAddImm(&Q, 1); }
         if (IsW) EmitTrunc32(&Q);
         if (Rd != 31) EmitStoreRax(&Q, (UINT32)ArmRegXOff(Rd));
-
-        // Condition: recorded setter flags, or the PSTATE byte.
-        if (Ctx->FlagSet.HasSetter) {
-          EmitComputeFlagsFromSet (&Q, &Ctx->FlagSet);
-          EmitJccSlot(&Q, CondJccTrue[Cond], &Ltrue);
-        } else {
-          EmitByte(&Q, 0x8A); EmitByte(&Q, 0x83); EmitDword(&Q, (UINT32)(PstateOff() + 3));
-          EmitCondTrueFromPstate (&Q, Cond, &Ldone);
-          EmitJccSlot(&Q, 0xEB, &Ltrue);
-        }
-        EmitJccSlot(&Q, 0xEB, &Ldone);   // cond FALSE: skip the true value
+        EmitJccSlot(&Q, 0xEB, &Ldone);   // cond FALSE done
 
         // Cond TRUE: Rn (unmodified).
         QTrueStart = Q;
@@ -1864,6 +1872,9 @@ STATIC UINTN DbtTranslateOne (
 
         PatchJcc (&Ltrue, OneTargets, 1, Q, QTrueStart);
         PatchJcc (&Ldone, NoTargets, 1, Q, Q);
+        if (Lfalse != NULL) {
+          PatchJcc (&Lfalse, OneTargets, 1, Q, Ldef);
+        }
 
         CopyMem (P, Seq, (UINTN)(Q - Seq));
         P += (UINTN)(Q - Seq);
@@ -2924,6 +2935,22 @@ VOID DbtTraceMemSt (VOID) {
 }
 
 VOID DbtTraceMemLd (VOID) {
+  //
+  // Never gated: spy on the kvprintf %s dispatch table load.  Fires mid-block
+  // at the ldrsw, so x16/x17 are the live index/base used for the entry:
+  // index must be 0x73 ('s'), not 0 (default handler -> re-scan loop).
+  //
+  if ((gDbtTraceVa >= 0xFFFFFE000BBF0880ull) &&
+      (gDbtTraceVa <  0xFFFFFE000BBF0A80ull) &&
+      gDbtActiveState != NULL) {
+    DBG((DEBUG_INFO, "DBT_TBL: va=0x%llx idx=%lld x16=0x%llx x17=0x%llx w12=0x%llx\n",
+         gDbtTraceVa,
+         (INT64)((gDbtTraceVa - 0xFFFFFE000BBF0880ull) >> 2),
+         gDbtActiveState->X[16], gDbtActiveState->X[17],
+         gDbtActiveState->X[12] & 0xFFFFFFFF));
+    return;
+  }
+
   if (!DBT_VERBOSE || !gDbtTraceEnabled) return;
   DBG((DEBUG_INFO, "DBT_MEM: LD size=%u va=0x%llx val=0x%llx%s\n",
        (1u << gDbtTraceSize) >> 1, gDbtTraceVa, gDbtTraceVal,
