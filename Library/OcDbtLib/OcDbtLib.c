@@ -1646,16 +1646,26 @@ STATIC UINTN DbtTranslateOne (
       //   [22]=L (1=load) [21:15]=imm7 (signed, x8 for 64-bit elements)
       //   [14:10]=Rt2 [9:5]=Rn [4:0]=Rt
       //
-      UINT32 Size    = (Inst >> 30) & 3;
-      UINT32 Form    = (Inst >> 23) & 7;
-      UINT32 IsLoad  = (Inst >> 22) & 1;
-      INT32  Imm     = (INT32)((Inst >> 15) & 0x7F);
+      UINT32 Size = (Inst >> 30) & 3;
+      UINT32 Form = (Inst >> 23) & 7;
+      UINT32 IsLoad = (Inst >> 22) & 1;
+      INT32  Imm = (INT32)((Inst >> 15) & 0x7F);
       if (Imm & 0x40) { Imm |= ~0x7F; }  // sign-extend bit 6
       Imm <<= 3;                         // scale by element size (8 bytes)
-      UINT8  Rt2     = (Inst >> 10) & 0x1F;
-      UINTN  RnOffP  = (Rn == 31) ? SpOff : RnOff;
+      UINT8  Rt2 = (Inst >> 10) & 0x1F;
+      UINTN  RnOffP = (Rn == 31) ? SpOff : RnOff;
 
-      if (Size == 2 && (Form == 1 || Form == 2 || Form == 3)) {
+      //
+      // LDNP/STNP (non-temporal pair) encode as form 0: offset is implicitly
+      // zero and there is no writeback.  The remaining fields decode exactly
+      // like signed-offset LDP/STP, so force the offset to zero and fall
+      // through to the common path.
+      //
+      if (Form == 0) {
+        Imm = 0;
+      }
+
+      if (Size == 2 && Form <= 3) {
         // Compute guest address into RCX (pre-index also writes it back to Rn)
         if (Form == 1) {
           // post-index: address = Rn, writeback happens after the access
@@ -1670,7 +1680,8 @@ STATIC UINTN DbtTranslateOne (
         }
 
         if (IsLoad) {
-          DBG((DEBUG_INFO, "DBT_ASM:    LDP X%d, X%d, [X%d%s, #%d]%s\n", Rt, Rt2, Rn,
+          DBG((DEBUG_INFO, "DBT_ASM:    %s X%d, X%d, [X%d%s, #%d]%s\n",
+               Form == 0 ? "LDNP" : "LDP", Rt, Rt2, Rn,
                Rn == 31 ? "31" : "", Imm, Form == 1 ? "!" : ""));
           EmitCallMapHelper(&P);                   // RAX = host base
           EmitByte(&P, 0x50);                      // PUSH host base
@@ -1682,7 +1693,8 @@ STATIC UINTN DbtTranslateOne (
           EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x41); EmitByte(&P, 0x08);
           EmitStoreRax(&P, ArmRegXOff(Rt2));
         } else {
-          DBG((DEBUG_INFO, "DBT_ASM:    STP X%d, X%d, [X%d%s, #%d]%s\n", Rt, Rt2, Rn,
+          DBG((DEBUG_INFO, "DBT_ASM:    %s X%d, X%d, [X%d%s, #%d]%s\n",
+               Form == 0 ? "STNP" : "STP", Rt, Rt2, Rn,
                Rn == 31 ? "31" : "", Imm, Form == 1 ? "!" : ""));
           EmitCallMapHelper(&P);                   // RAX = host base
           EmitByte(&P, 0x50);                      // PUSH host base
