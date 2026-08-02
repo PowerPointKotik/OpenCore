@@ -1539,6 +1539,16 @@ SKIP_READ_APPLE_KERNEL:
       } else {
         DEBUG ((DEBUG_INFO, "DirectKernel: kernel left image range at PC=0x%llx after %u steps\n",
                 ArmContext.PC, Steps));
+        DEBUG ((DEBUG_INFO, "DirectKernel: PC=0x%llx SP=0x%llx LR=0x%llx PST=0x%llx\n",
+                ArmContext.PC, ArmContext.SP, ArmContext.X[30], ArmContext.PSTATE));
+        DEBUG ((DEBUG_INFO, "DirectKernel: x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx\n",
+                ArmContext.X[0], ArmContext.X[1], ArmContext.X[2], ArmContext.X[3]));
+        DEBUG ((DEBUG_INFO, "DirectKernel: x8=0x%llx x9=0x%llx x19=0x%llx x20=0x%llx\n",
+                ArmContext.X[8], ArmContext.X[9], ArmContext.X[19], ArmContext.X[20]));
+        DEBUG ((DEBUG_INFO, "DirectKernel: x21=0x%llx x22=0x%llx x23=0x%llx x24=0x%llx\n",
+                ArmContext.X[21], ArmContext.X[22], ArmContext.X[23], ArmContext.X[24]));
+        DEBUG ((DEBUG_INFO, "DirectKernel: x25=0x%llx x26=0x%llx x27=0x%llx x28=0x%llx\n",
+                ArmContext.X[25], ArmContext.X[26], ArmContext.X[27], ArmContext.X[28]));
         break;
       }
 
@@ -1573,6 +1583,16 @@ SKIP_READ_APPLE_KERNEL:
     } else {
       DEBUG ((DEBUG_INFO, "DirectKernel: kernel left image range at PC=0x%llx after %u steps\n",
               ArmContext.PC, Steps));
+      DEBUG ((DEBUG_INFO, "DirectKernel: PC=0x%llx SP=0x%llx LR=0x%llx PST=0x%llx\n",
+              ArmContext.PC, ArmContext.SP, ArmContext.X[30], ArmContext.PSTATE));
+      DEBUG ((DEBUG_INFO, "DirectKernel: x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx\n",
+              ArmContext.X[0], ArmContext.X[1], ArmContext.X[2], ArmContext.X[3]));
+      DEBUG ((DEBUG_INFO, "DirectKernel: x8=0x%llx x9=0x%llx x19=0x%llx x20=0x%llx\n",
+              ArmContext.X[8], ArmContext.X[9], ArmContext.X[19], ArmContext.X[20]));
+      DEBUG ((DEBUG_INFO, "DirectKernel: x21=0x%llx x22=0x%llx x23=0x%llx x24=0x%llx\n",
+              ArmContext.X[21], ArmContext.X[22], ArmContext.X[23], ArmContext.X[24]));
+      DEBUG ((DEBUG_INFO, "DirectKernel: x25=0x%llx x26=0x%llx x27=0x%llx x28=0x%llx\n",
+              ArmContext.X[25], ArmContext.X[26], ArmContext.X[27], ArmContext.X[28]));
     }
 
     // Should not reach here

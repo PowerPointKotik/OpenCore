@@ -95,7 +95,7 @@ STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|cr
 #define DBT_RUN_ADAPT_AFTER  256    // executions between adaptation steps
 #define DBT_RUN_MAX_LINES    48     // line budget per adaptation window
 #define DBT_RUN_MIN_DIV      1      // sample every Nth execution
-#define DBT_RUN_MAX_DIV      4096
+#define DBT_RUN_MAX_DIV      64     // cap: keep silent chains visible
 
 STATIC BOOLEAN      gDbtTraceEnabled = TRUE;
 STATIC UINT32       gDbtFreshDumps = 0;   // fresh-block counter for ENTRY/EXIT dump thinning
