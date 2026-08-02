@@ -1579,12 +1579,11 @@ STATIC UINTN DbtTranslateOne (
       }
     } else if (Sub == 0 || Sub == 1) {
       //
-      // ADR / ADRP.  Note bit 23 is immhi bit 20, so both Sub==0 and
-      // Sub==1 land here: sf(31) immlo(30:29) 10000(28:24) immhi(23:5) Rd(4:0)
-      //
-      // bit30 is the ADRP/ADR op bit (0 = ADRP, 1 = ADR).  bit31 is the
-      // always-set sf bit and must NOT be used here.
-      BOOLEAN IsAdrp = ((Inst >> 30) & 1) == 0;
+      // ADR / ADRP.  ADRP is encoded with opcode bits 31:25 == 0x90, ADR
+      // with 0x10; the two differ in bit 31, so test (Inst & 0x9F000000)
+      // == 0x90000000 -- NOT bit 30 (immlo, free in both).  bit 23 holds
+      // the top immhi bit, so both Sub==0 and Sub==1 land here.
+      BOOLEAN IsAdrp = ((Inst & 0x9F000000) == 0x90000000);
       INT64   Imm    = ((Inst >> 5) & 0x7FFFF) << 2;      // immhi << 2
       Imm           |= (Inst >> 29) & 3;                  // immlo
       if (Imm & (1LL << 20)) { Imm |= ~((INT64)0x1FFFFF); }  // sign-extend 21
@@ -1609,11 +1608,17 @@ STATIC UINTN DbtTranslateOne (
     UINT32 Op24 = (Inst >> 24) & 1;
 
     if (Op24 == 0) {
-      // ADR / ADRP (bit30 is the op bit, as above)
-      INT64 Off = ((Inst >> 5) & 0x7FFFF) << 2;
-      INT64 Val = InstAddr + ((Off << 43) >> 43);
-      if (((Inst >> 30) & 1) == 0) Val &= ~0xFFF;  // ADRP: page-align
-      DBG((DEBUG_INFO, "DBT_ASM:    ADR%s X%d, 0x%llx\n", ((Inst>>30)&1)==0 ? "P" : "", Rd, Val));
+      // ADR / ADRP (same classifier as the Op0==8/9 path above: opcode
+      // bits 31:25 are 0x90 for ADRP, 0x10 for ADR -- bit 31 differs, not
+      // bit 30).
+      BOOLEAN IsAdrp = ((Inst & 0x9F000000) == 0x90000000);
+      INT64   Off    = ((Inst >> 5) & 0x7FFFF) << 2;        // immhi << 2
+      INT64   ImmLo  = (Inst >> 29) & 3;                    // immlo
+      INT64   Imm    = Off | ImmLo;
+      if (Imm & (1LL << 20)) { Imm |= ~((INT64)0x1FFFFF); }
+      INT64   Val    = (INT64)InstAddr + (IsAdrp ? (Imm << 12) : Imm);
+      if (IsAdrp) { Val &= ~((INT64)0xFFF); }
+      DBG((DEBUG_INFO, "DBT_ASM:    ADR%s X%d, 0x%llx\n", IsAdrp ? "P" : "", Rd, Val));
       EmitMovImm(&P, Val);
       EmitStoreRax(&P, RdOff);
     } else {
