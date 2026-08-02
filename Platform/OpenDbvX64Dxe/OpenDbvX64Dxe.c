@@ -702,8 +702,8 @@ SetupCpuDataEntries (
         if (*(UINT32 *)(Seg + J + 4) != 0x92403DE0) {      // and x0, x15, #0xff
           continue;
         }
-        Inst = *(UINT32 *)(Seg + J + 8);
-        if ((Inst & 0x1F000000) != 0x10000000 ||           // adr/adrp x1
+Inst = *(UINT32 *)(Seg + J + 8);
+        if ((Inst & 0x1F000000) != 0x10000000 ||   // (adr|adrp) prologue
             (Inst & 0x1F) != 1) {
           continue;
         }
@@ -712,10 +712,10 @@ SetupCpuDataEntries (
         if (Imm & (1ULL << 20)) {
           Imm |= ~((UINT64)0x1FFFFF);
         }
-        if ((Inst >> 24) & 1) {                            // adrp
+        if ((Inst & 0x9F000000) == 0x90000000) {   // ADRP (not ADR)
           Addr = (Pc + (Imm << 12)) & ~((UINT64)0xFFF);
         } else {
-          Addr = Pc + Imm;
+          Addr = Pc + Imm;                         // ADR
         }
         Inst = *(UINT32 *)(Seg + J + 12);
         if ((Inst & 0xFF800000) != 0x91000000 ||           // add x1, x1, #imm
@@ -751,14 +751,82 @@ SetupCpuDataEntries (
           UINT8   *CpuDataHost;
 
           //
-          // The kernel checks cpu_data[+0xB8] for equality against
-          // EntryPoint+0x77B (first branch) / EntryPoint-0x420; on mismatch
-          // it walks to the DEADB001 spin.  The fake structure must live in
-          // the image so the check passes: place it at EntryPoint+0x77B in
-          // the NOP padding.
+          // The kernel checks cpu_data[+0xB8] for equality against two fixed
+          // kernel addresses that __TEXT_BOOT_EXEC builds with ADRP/ADD right
+          // after the MRS/scan prologue (observed for macOS 27:
+          // 0xFFFFFE000BD4FE04 and 0xFFFFFE000BD50258).  Decode both from the
+          // two ADRP/ADD pairs that load x3 after the `ldr x2,[x21,#0xB8]`
+          // check; the first candidate is the equality target of the first
+          // branch.  On failure fall back to the legacy EntryPoint+0x77B.
           //
+          {
+            UINT64  ResetCandidates[2];
+            UINTN   RC;
+
+            ResetCandidates[0] = 0;
+            ResetCandidates[1] = 0;
+            for (RC = 0; RC < 2; RC++) {
+              UINT32  RInst8;
+              UINT64  RPc;
+              UINT64  RImm;
+              UINT64  RAddr;
+              UINT32  RInst12;
+
+              if (J + 0x94 > Len) {
+                break;
+              }
+
+              //
+              // Reset-handler check sequence (relative to master slot J);
+              // disassembly of the macOS 27 prologue:
+              //   J+0x70: ldr  x2, [x21, #0xb8]
+              //   J+0x74: cbz  x2, dead
+              //   J+0x78: adrp x3                    (candidate #0)
+              //   J+0x7C: add  x3, x3, #imm
+              //   J+0x80: cmp  x2, x3
+              //   J+0x84: b.eq <handler0>
+              //   J+0x88: adrp x3                    (candidate #1)
+              //   J+0x8C: add  x3, x3, #imm
+              //   J+0x90: cmp  x2, x3
+              //   J+0x94: b.eq <handler1>
+              //
+              RInst8 = *(UINT32 *)(Seg + J + 0x78 + (RC * 0x10));
+              if ((RInst8 & 0x1F000000) != 0x10000000 ||
+                  (RInst8 & 0x1F) != 3) {
+                continue;
+              }
+              RPc  = SegVmAddr[I] + J + 0x78 + (RC * 0x10);
+              RImm = (((UINT64)((RInst8 >> 5) & 0x7FFFF)) << 2) |
+                     ((UINT64)((RInst8 >> 29) & 3));
+              if (RImm & (1ULL << 20)) {
+                RImm |= ~((UINT64)0x1FFFFF);
+              }
+              if ((RInst8 & 0x9F000000) == 0x90000000) {
+                RAddr = (RPc + (RImm << 12)) & ~((UINT64)0xFFF);
+              } else {
+                RAddr = RPc + RImm;
+              }
+              RInst12 = *(UINT32 *)(Seg + J + 0x7C + (RC * 0x10));
+              if ((RInst12 & 0xFF800000) != 0x91000000 ||
+                  (RInst12 & 0x3FF) != 0x63) {
+                continue;
+              }
+              ResetCandidates[RC] = RAddr + ((RInst12 >> 10) & 0xFFF);
+            }
+
+            ResetHandler = 0;
+            for (RC = 0; RC < 2; RC++) {
+              if (ResetCandidates[RC] != 0) {
+                ResetHandler = ResetCandidates[RC];
+                break;
+              }
+            }
+            if (ResetHandler == 0) {
+              ResetHandler = EntryPoint + 0x77B;
+            }
+          }
+
           CpuDataVa     = EntryPoint + 0x77B;
-          ResetHandler  = EntryPoint + 0x77B;
           CpuDataHost   = KernelBuffer + SegFileOff[FirstSeg] + 0x77B;
           Pad = SegVmSize[FirstSeg] > 0x77B + 0x1000 ? 0x1000 : 0;
 
