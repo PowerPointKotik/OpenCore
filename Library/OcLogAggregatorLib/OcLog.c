@@ -410,17 +410,26 @@ InternalLogAddEntry (
           //
           ASSERT (Private->AsciiBufferWrittenOffset >= Private->AsciiBufferFlushedOffset);
           WriteSize   = Private->AsciiBufferWrittenOffset - Private->AsciiBufferFlushedOffset;
-          WrittenSize = WriteSize;
-          OcLog->UnsafeLogFile->Write (OcLog->UnsafeLogFile, &WrittenSize, &Private->AsciiBuffer[Private->AsciiBufferFlushedOffset]);
-          OcLog->UnsafeLogFile->Flush (OcLog->UnsafeLogFile);
-          Private->AsciiBufferFlushedOffset += WrittenSize;
-          if (WriteSize != WrittenSize) {
-            DEBUG ((
-              DEBUG_VERBOSE,
-              "OCL: Log write truncated %u to %u\n",
-              WriteSize,
-              WrittenSize
-              ));
+          //
+          // Batch the file writes: one Write+Flush per DebugPrint is the
+          // dominant cost of verbose DBT boots.  Push only once the pending
+          // bytes reach the threshold, or when the 256 KB buffer is about to
+          // fill (AsciiStrCatS would otherwise start dropping new lines).
+          //
+          if ((WriteSize >= OC_LOG_FILE_FLUSH_THRESHOLD) ||
+              (Private->AsciiBufferWrittenOffset >= (Private->AsciiBufferSize - OC_LOG_LINE_BUFFER_SIZE))) {
+            WrittenSize = WriteSize;
+            OcLog->UnsafeLogFile->Write (OcLog->UnsafeLogFile, &WrittenSize, &Private->AsciiBuffer[Private->AsciiBufferFlushedOffset]);
+            OcLog->UnsafeLogFile->Flush (OcLog->UnsafeLogFile);
+            Private->AsciiBufferFlushedOffset += WrittenSize;
+            if (WriteSize != WrittenSize) {
+              DEBUG ((
+                DEBUG_VERBOSE,
+                "OCL: Log write truncated %u to %u\n",
+                WriteSize,
+                WrittenSize
+                ));
+            }
           }
         } else {
           //

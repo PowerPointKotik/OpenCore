@@ -98,6 +98,7 @@ STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|cr
 #define DBT_RUN_MAX_DIV      4096
 
 STATIC BOOLEAN      gDbtTraceEnabled = TRUE;
+STATIC UINT32       gDbtFreshDumps = 0;   // fresh-block counter for ENTRY/EXIT dump thinning
 STATIC UINT64       gDbtRunSeq   = 0;   // total block executions
 STATIC UINT32       gDbtRunDiv   = DBT_RUN_MIN_DIV;
 STATIC UINT32       gDbtRunSteps = 0;   // executions since last adaptation
@@ -2598,8 +2599,16 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
 
   // Copy ARM state into context so translated code can access it
   CopyMem(&Ctx->ArmState, ArmState, sizeof(DBT_ARM64_STATE));
+  //
+  // Full ENTRY/EXIT register dumps are expensive (10 lines each) and the
+  // DBT_RUN runtime trace already snapshots state continuously, so dump
+  // them only on every 4th fresh block to keep the 256 KB log usable.
+  //
   if (gDbtTraceEnabled) {
-    DbtDumpState ("ENTRY", &Ctx->ArmState);
+    gDbtFreshDumps++;
+    if ((gDbtFreshDumps & 3) == 0) {
+      DbtDumpState ("ENTRY", &Ctx->ArmState);
+    }
   }
 
   // Deliver the state pointer to the translated prologue (ABI-agnostic)
@@ -2647,7 +2656,7 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
     gDbtSpinPc   = 0;
   }
 
-  if (gDbtTraceEnabled) {
+  if (gDbtTraceEnabled && ((gDbtFreshDumps & 3) == 0)) {
     DbtDumpState ("EXIT", ArmState);
   }
 }

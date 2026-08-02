@@ -25,6 +25,15 @@
 #define OC_LOG_NVRAM_BUFFER_SIZE      BASE_32KB
 #define OC_LOG_FILE_PATH_BUFFER_SIZE  256
 #define OC_LOG_TIMING_BUFFER_SIZE     64
+//
+// Batch the per-line log file writes: a FAT Write+Flush on every DebugPrint
+// makes DBT-verbose boots crawl (each block emits several lines, each line
+// costs one Write+Flush pair).  Instead flush to the file only once this many
+// bytes have accumulated (or the 256 KB buffer is about to fill).  At a hard
+// hang the tail up to this threshold stays in RAM and is lost, but a stalled
+// guest repeats identical lines, so the stall remains readable.
+//
+#define OC_LOG_FILE_FLUSH_THRESHOLD   BASE_2KB
 
 #define OC_LOG_PRIVATE_DATA_SIGNATURE  SIGNATURE_32 ('O', 'C', 'L', 'G')
 
