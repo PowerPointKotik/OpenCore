@@ -48,6 +48,17 @@ typedef struct DBT_CONTEXT {
   UINT64          *SegVmSize;
   UINT64          *SegFileOff;
   UINT8           *KernelBuffer;
+  //
+  // Host-backed guest "physical memory" window.  The kernel's first accesses
+  // (low global / boot shim structures) hit VAs that fall outside every
+  // loaded segment; historically those identity-mapped straight onto the
+  // x86 firmware's own pages (garbage) and the boot dereferenced a bogus
+  // pointer.  Registering a host buffer here lets low guest accesses land
+  // in deterministic memory instead (default: zeroed).
+  //
+  UINT64           PhysWinBase;
+  UINTN            PhysWinSize;
+  UINT8           *PhysWinBuffer;
   VOID            *TranslatedCode;
   UINTN            TranslatedSize;
   UINTN            CodeCapacity;

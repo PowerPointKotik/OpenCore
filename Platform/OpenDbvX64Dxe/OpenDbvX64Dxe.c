@@ -1435,6 +1435,43 @@ SKIP_READ_APPLE_KERNEL:
     }
 
     //
+    // Register a host-backed zeroed window for low guest "physical" VAs.
+    // The kernel's early boot shim touches globals at small offsets (e.g.
+    // 0x1C0); with no backing they identity-map onto the x86 firmware's own
+    // low pages and the read yields unrelated bytes the kernel later takes
+    // for a pointer (observed as a hang after the CPU-scan handoff).
+    //
+    {
+      UINTN  PhysWinSize = EFI_PAGES_TO_SIZE (256);  // 1MB
+      UINT8 *PhysWinBuffer;
+      Status = gBS->AllocatePages (
+                      EfiAllocateAnyPages,
+                      EfiLoaderData,
+                      EFI_SIZE_TO_PAGES (PhysWinSize),
+                      (EFI_PHYSICAL_ADDRESS *)&PhysWinBuffer
+                      );
+      Status = gBS->AllocatePages (
+                      EfiAllocateAnyPages,
+                      EfiLoaderData,
+                      EFI_SIZE_TO_PAGES (PhysWinSize),
+                      (EFI_PHYSICAL_ADDRESS *)&PhysWinBuffer
+                      );
+      if (!EFI_ERROR (Status)) {
+        ZeroMem (PhysWinBuffer, PhysWinSize);
+        DEBUG ((DEBUG_INFO, "DirectKernel: phys window allocated host=%p sz=0x%x\n",
+                PhysWinBuffer, PhysWinSize));
+
+        if (EFI_ERROR (DbtSetPhysWindow (gDbtContext, 0, PhysWinSize, PhysWinBuffer))) {
+          DEBUG ((DEBUG_ERROR, "DirectKernel: DbtSetPhysWindow failed\n"));
+          gBS->FreePages ((EFI_PHYSICAL_ADDRESS)(UINTN)PhysWinBuffer,
+                          EFI_SIZE_TO_PAGES (PhysWinSize));
+        }
+      } else {
+        DEBUG ((DEBUG_WARN, "DirectKernel: phys window alloc failed - %r\n", Status));
+      }
+    }
+
+    //
     // Populate the per-CPU data entries handoff table that xnu's boot code
     // scans (iBoot would normally fill it); without this the kernel reads
     // stale file data and faults dereferencing it.

@@ -2730,10 +2730,39 @@ UINT64 DbtTranslateVaToPa (DBT_CONTEXT *Ctx, UINT64 Va) {
                                + (UINTN)(Va - Ctx->SegVmAddr[I]));
       }
     }
+
+    //
+    // Host-backed physical window: guest VAs that the kernel uses as low
+    // "physical" memory (boot shim globals, early descriptors) land here.
+    // Without this the identity fallback below maps them straight onto the
+    // x86 firmware's own low pages, whose bytes are unrelated garbage that
+    // the kernel then treats as a pointer (e.g. the hanging 0x1C0 reads).
+    //
+    if (Ctx->PhysWinBuffer != NULL
+        && Va >= Ctx->PhysWinBase
+        && Va < Ctx->PhysWinBase + Ctx->PhysWinSize) {
+      DBG((DEBUG_INFO, "DBT_MMU: VA 0x%llx phys window -> host 0x%llx\n",
+           Va, (UINT64)(UINTN)(Ctx->PhysWinBuffer + (Va - Ctx->PhysWinBase))));
+      return (UINT64)(UINTN)(Ctx->PhysWinBuffer + (Va - Ctx->PhysWinBase));
+    }
   }
 
   DBG((DEBUG_WARN, "DBT_MMU: VA 0x%llx outside image — identity\n", Va));
   return Va;
+}
+
+EFI_STATUS DbtSetPhysWindow (DBT_CONTEXT *Ctx, UINT64 Base, UINTN Size, VOID *Buffer) {
+  if (Ctx == NULL || (Size != 0 && Buffer == NULL)) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  Ctx->PhysWinBase   = Base;
+  Ctx->PhysWinSize   = Size;
+  Ctx->PhysWinBuffer = (UINT8 *)Buffer;
+
+  DBG((DEBUG_INFO, "DBT_MMU: phys window base=0x%llx sz=0x%x host=%p\n",
+       Base, (UINT32)Size, Buffer));
+  return EFI_SUCCESS;
 }
 
 EFI_STATUS DbtSetSegments (DBT_CONTEXT *Ctx, UINTN SegCount, UINT64 *SegVmAddr,

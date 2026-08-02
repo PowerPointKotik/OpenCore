@@ -81,6 +81,14 @@ DbtSetSegments (
   IN VOID         *KernelBuffer
   );
 
+EFI_STATUS
+DbtSetPhysWindow (
+  IN DBT_CONTEXT  *Context,
+  IN UINT64        Base,
+  IN UINTN         Size,
+  IN VOID         *Buffer
+  );
+
 EFI_HANDLE
 DbtGetInstallerDevice (
   IN DBT_CONTEXT  *Context
