@@ -617,6 +617,18 @@ OcConfigureLogProtocol (
 
   ASSERT (LogModules != NULL);
 
+  //
+  // FULL-VERBOSE DEBUG BUILD: force every log entry to both the console and
+  // the log file at every debug level (0xFFFFFFFF), regardless of the
+  // Logging/Debug settings in config.plist.  This makes the whole boot
+  // chain — OpenCore bootstrap, boot picker, and the OpenDbvX64Dxe DBT
+  // dispatcher — print a full runtime trace on screen and in the file.
+  // DisplayDelay is cleared so long lines do not stall the boot.
+  //
+  Options      |= OC_LOG_CONSOLE | OC_LOG_FILE;
+  DisplayDelay  = 0;
+  DisplayLevel  = (UINTN)0xFFFFFFFF;
+
   if ((Options & (OC_LOG_FILE | OC_LOG_ENABLE)) == (OC_LOG_FILE | OC_LOG_ENABLE)) {
     LogRoot       = NULL;
     LogPath       = GetLogPath (LogPrefixPath);

@@ -50,6 +50,33 @@ STATIC DBT_CONTEXT  *gDbtContext     = NULL;
 STATIC EFI_HANDLE   gInstallerDevice = NULL;
 
 //
+// Force the OpenCore log protocol to maximum verbosity on both the console
+// and in the log file.  Called from the entry point (covers the picker),
+// from the boot entry enumeration (covers the boot picker scan) and from
+// the boot entry action (covers the DirectKernel / macOS Translated boot).
+//
+STATIC
+VOID
+RaiseScreenVerbose (
+  VOID
+  )
+{
+  OC_LOG_PROTOCOL  *OcLog;
+  EFI_STATUS       Status;
+
+  Status = gBS->LocateProtocol (&gOcLogProtocolGuid, NULL, (VOID **)&OcLog);
+  if (EFI_ERROR (Status) || OcLog == NULL) {
+    DEBUG ((DEBUG_WARN, "DBT: OcLog protocol not found, screen trace unavailable\n"));
+    return;
+  }
+
+  OcLog->DisplayLevel = (UINTN)0xFFFFFFFF;
+  OcLog->Options     |= OC_LOG_CONSOLE | OC_LOG_FILE;
+  OcLog->DisplayDelay = 0;
+  DEBUG ((DEBUG_INFO, "DBT: on-screen log level raised to 0xFFFFFFFF\n"));
+}
+
+//
 // True when an ARM64 instruction updates PC (so a translated block must end
 // there for the dispatcher to continue from the new address).
 //
@@ -1454,6 +1481,7 @@ DbtBootEntryAction (
 {
   DEBUG ((DEBUG_INFO, "DBT: BootEntryAction picker=%p dp=%p\n",
           PickerContext, DevicePath));
+  RaiseScreenVerbose ();
   DEBUG ((DEBUG_INFO, "DBT: starting DirectKernel\n"));
   //
   // Fallback: scan all filesystems for kernel if no boot info yet
@@ -1599,6 +1627,8 @@ OcGetDbtBootEntries (
   ASSERT (PickerContext != NULL);
   ASSERT (Entries != NULL);
   ASSERT (NumEntries != NULL);
+
+  RaiseScreenVerbose ();
 
   *Entries    = NULL;
   *NumEntries = 0;
@@ -2112,25 +2142,12 @@ OpenDbvX64EntryPoint (
   DEBUG ((DEBUG_INFO, "DBT: entry image=%p st=%p\n", ImageHandle, SystemTable));
 
   //
-  // Raise the on-screen log level so the full verbose DBT trace (DEBUG_INFO)
-  // is printed to the console as well as the serial/file log.  This keeps the
-  // runtime trace visible on screen during the boot picker and the
-  // "macOS Installer (Translated)" direct kernel run regardless of the
-  // Logging/DisplayLevel setting in config.plist.
+  // Raise the on-screen + file log level so the full verbose DBT trace is
+  // printed to the console during the boot picker and the "macOS Installer
+  // (Translated)" direct kernel run regardless of the Logging/DisplayLevel
+  // setting in config.plist.
   //
-  {
-    OC_LOG_PROTOCOL  *OcLog;
-
-    Status = gBS->LocateProtocol (&gOcLogProtocolGuid, NULL, (VOID **)&OcLog);
-    if (!EFI_ERROR (Status) && OcLog != NULL) {
-      OcLog->DisplayLevel = 0x7FFFFFFF;
-      OcLog->Options     |= OC_LOG_CONSOLE;
-      OcLog->DisplayDelay = 0;
-      DEBUG ((DEBUG_INFO, "DBT: on-screen log level raised to 0x7FFFFFFF\n"));
-    } else {
-      DEBUG ((DEBUG_WARN, "DBT: OcLog protocol not found, screen trace unavailable\n"));
-    }
-  }
+  RaiseScreenVerbose ();
 
   Status = DbtInitContext (&gDbtContext, 0x100000);
   if (EFI_ERROR (Status)) {
