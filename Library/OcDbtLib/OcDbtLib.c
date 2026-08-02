@@ -58,15 +58,21 @@ STATIC UINT32       gDbtTraceSize = 0;  // access size 0=B 1=H 2=W 3=X
 STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|crm<<4|op2)
 
 //
-// Runtime trace gate.  DbtExecute sets it per invocation: TRUE only when the
-// block about to run is being executed for the first time (its guest PC is
-// not yet in the translation cache).  Loop iterations therefore stay silent
-// instead of flooding the 256 KB OpenCore log with register dumps — the
-// observed boot failure mode.  DbtTraceBlock/MemLd/MemSt/Sys bail out when
-// the gate is down; the kernel-console (UART) capture in DbtTraceMemSt is
-// exempt because printk output must never be dropped.
+// Runtime trace gate.  DbtExecute normally sets it per invocation: TRUE only
+// when the block about to run is being executed for the first time (its
+// guest PC is not yet in the translation cache).  Loop iterations therefore
+// stay silent instead of flooding the 256 KB OpenCore log with register
+// dumps — the observed boot failure mode.  DbtTraceBlock/MemLd/MemSt/Sys bail
+// out when the gate is down; the kernel-console (UART) capture in
+// DbtTraceMemSt is exempt because printk output must never be dropped.
 //
-STATIC BOOLEAN      gDbtTraceEnabled = FALSE;
+// FULL-VERBOSE DEBUG BUILD: keep the gate permanently raised so every block
+// execution (including cached loop bodies) emits its full dump.  This can
+// overrun the firmware log, but it is the requested exhaustive trace.
+//
+#define DBT_FULL_VERBOSE  1
+
+STATIC BOOLEAN      gDbtTraceEnabled = TRUE;
 
 //
 // Fresh-block marker.  The driver calls DbtTranslateBlock (which registers
@@ -2388,7 +2394,12 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
     UINTN   I;
 
     gDbtLastNew = FALSE;
+#if DBT_FULL_VERBOSE
+    (void) Fresh;
+    gDbtTraceEnabled = TRUE;
+#else
     gDbtTraceEnabled = Fresh;
+#endif
     for (I = 0; I < 3; I++) {
       if (gDbtLastPc[I] == ArmState->PC) {
         Known = TRUE;
