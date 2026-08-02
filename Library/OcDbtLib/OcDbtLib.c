@@ -2197,12 +2197,28 @@ STATIC UINTN DbtTranslateOne (
     if ((Inst >> 24) & 1) {
       //
       // 1111 1001 01xx: LDR/STR unsigned immediate (imm12, scaled by size)
-      // opc: 0=STR, 1=LDR, 2=LDRSW/LDRSB/LDRSH, 3=PRFM; size: 0=B 1=H 2=W 3=X
+      // opc[23:22]: 0=STR, 1=LDR, 2=sign-extending load (X dest: LDRSB/LDRSH/
+      // LDRSW), 3=sign-extending load (W dest: LDRSB W/LDRSH W).  PRFM has
+      // bit 24 clear and is handled by the literal path, never here.
       //
-      if (Opc <= 2) {
+      if (((Opc == 2) && (Size == 3)) || ((Opc == 3) && (Size >= 2))) {
+        DBG((DEBUG_INFO, "DBT_ASM:    unallocated load/store -> NOP\n"));
+        EmitNop(&P);
+      } else if (Opc >= 2) {
+        BOOLEAN Sf = (Opc == 2);   // opc 10 -> 64-bit dest, 11 -> 32-bit dest
+        UINT32 Imm = ((Inst >> 10) & 0xFFF) << Size;
+        CONST CHAR8 *Name = Size == 0 ? "LDRSB" : Size == 1 ? "LDRSH" : "LDRSW";
+
+        DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, [X%d, #%d]\n", Name,
+             Sf ? "" : " W", Rt, Rn == 31 ? 31 : Rn, Imm));
+        EmitLoadRcx(&P, RnOffL);
+        if (Imm) { EmitAddRcxImm(&P, Imm); }
+        EmitCallMapHelper(&P);                 // RAX = host address
+        EmitMemAccess(&P, Size, 2, Sf, (UINT32)RtOff);
+      } else if (Opc == 1) {
         BOOLEAN Sf = (Inst >> 31) & 1;
         UINT32 Imm = ((Inst >> 10) & 0xFFF) << Size;
-        CONST CHAR8 *Name = Opc == 1 ? "LDR" : Opc == 0 ? "STR" : "LDRS";
+        CONST CHAR8 *Name = "LDR";
 
         DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, [X%d, #%d]\n", Name,
              Size == 0 ? "B" : Size == 1 ? "H" : Size == 2 ? "W" : "",
@@ -2210,10 +2226,18 @@ STATIC UINTN DbtTranslateOne (
         EmitLoadRcx(&P, RnOffL);
         if (Imm) { EmitAddRcxImm(&P, Imm); }
         EmitCallMapHelper(&P);                 // RAX = host address
-        EmitMemAccess(&P, Size, Opc, Sf, (UINT32)RtOff);
+        EmitMemAccess(&P, Size, 1, Sf, (UINT32)RtOff);
       } else {
-        DBG((DEBUG_INFO, "DBT_ASM:    PRFM -> NOP\n"));
-        EmitNop(&P);
+        UINT32 Imm = ((Inst >> 10) & 0xFFF) << Size;
+        CONST CHAR8 *Name = "STR";
+
+        DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, [X%d, #%d]\n", Name,
+             Size == 0 ? "B" : Size == 1 ? "H" : Size == 2 ? "W" : "",
+             Rt, Rn == 31 ? 31 : Rn, Imm));
+        EmitLoadRcx(&P, RnOffL);
+        if (Imm) { EmitAddRcxImm(&P, Imm); }
+        EmitCallMapHelper(&P);                 // RAX = host address
+        EmitMemAccess(&P, Size, 0, FALSE, (UINT32)RtOff);
       }
       return (UINTN)(P - X86Buf);
     }
@@ -2253,7 +2277,7 @@ STATIC UINTN DbtTranslateOne (
       // 1111 1001 011: LDR/STR (register) — option must be 3 (UXTX)
       // Rm [20:16], option [15:13], S [12] (S=1 shifts by size)
       //
-      if (Opc <= 2) {
+      if (Opc <= 2 || (Opc == 3 && Size < 2)) {
         UINT8 Rm   = (Inst >> 16) & 0x1F;
         UINT8 Opt  = (Inst >> 13) & 7;
         UINT8 S    = (Inst >> 12) & 1;
@@ -2268,8 +2292,10 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
           //   S (bit 12) selects the scaled shift: index scaled by size.
           UINT8 ShAmt = (S == 1) ? Size : 0;
 
-          DBG((DEBUG_INFO, "DBT_ASM:    %sX%d, [X%d + %s X%d%s]\n",
-               Opc == 1 ? "LDR" : "STR", Rt, Rn, (Opt == 3) ? "" : "w",
+          DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, [X%d + %s X%d%s]\n",
+               Opc == 1 ? "LDR" : Opc == 0 ? "STR"
+                       : (Size == 0) ? "LDRSB" : (Size == 1) ? "LDRSH" : "LDRSW",
+               (Opc == 3) ? " W" : "", Rt, Rn, (Opt == 3) ? "" : "w",
                Rm, S ? " lsl #1" : ""));
 
           EmitLoadRcx(&P, RnOffL);
@@ -2283,7 +2309,7 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
           if (ShAmt) { EmitRexW(&P); EmitByte(&P, 0xC1); EmitByte(&P, 0xE0); EmitByte(&P, ShAmt); }  // SHL RAX, ShAmt
           EmitRexW(&P); EmitByte(&P, 0x01); EmitByte(&P, 0xC1); // ADD RCX, RAX
           EmitCallMapHelper(&P);
-          EmitMemAccess(&P, Size, Opc, (Inst >> 31) & 1, (UINT32)RtOff);
+          EmitMemAccess(&P, Size, 2, (Opc == 2), (UINT32)RtOff);
           return (UINTN)(P - X86Buf);
         }
         DBG((DEBUG_INFO, "DBT_ASM:    Reg-offset (opc=%d opt=%d) -> NOP\n", Opc, Opt));
