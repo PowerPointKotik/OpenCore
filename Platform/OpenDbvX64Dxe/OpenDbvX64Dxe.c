@@ -616,10 +616,10 @@ CreateMinimalDeviceTree (
 // On real hardware iBoot fills the table before starting the kernel; with a
 // direct load the slots contain file data (observed: 0x201FD503201FD503),
 // which makes the kernel dereference garbage and fault.  We locate the table
-// by decoding the ADR/ADD pair right after the MRS/AND prologue and write a
-// host pointer to a zeroed per-CPU data area.  The DBT identity-maps guest
-// VAs outside the kernel image, so the translated loads use the host pointer
-// as-is.
+// by decoding the ADR/ADD pair right after the MRS/AND prologue and route the
+// entry to a fake per-CPU data structure that lives inside the kernel image.
+// xnu continues the handoff with strict VA checks (stack fields and a reset
+// handler constant), so a separate host buffer can never pass them.
 //
 STATIC
 UINT8 *
@@ -629,7 +629,9 @@ SetupCpuDataEntries (
   IN UINT64  *SegVmAddr,
   IN UINT64  *SegVmSize,
   IN UINT64  *SegFileOff,
-  IN UINT64  EntryPoint
+  IN UINT64  EntryPoint,
+  IN UINT8   *StackBase,
+  IN UINTN   StackSize
   )
 {
   UINTN   I;
@@ -706,31 +708,73 @@ SetupCpuDataEntries (
           break;
         }
 
-        CpuData = AllocateZeroPool (0x4000);
-        if (CpuData == NULL) {
-          DEBUG ((DEBUG_ERROR, "DirectKernel: failed to allocate per-CPU data\n"));
-          return NULL;
+        // The kernel's per-CPU data handoff is fully VA-relative: after the
+        // scan sets SP from cpu_data[+0x18] (machine stack) and [+0x28]
+        // (exception stack) it reads cpu_data[+0xB8] and requires it to equal
+        // one of two fixed kernel addresses (here EntryPoint+0x77B or
+        // EntryPoint-0x420); anything else spins on DEADB001/DEADB002.  A
+        // separate host heap buffer can never match those constants, so the
+        // fake cpu_data lives inside the __TEXT_BOOT_EXEC NOP padding
+        // (EntryPoint+0x77B is all NOPs).
+        //
+        {
+          UINT64  CpuDataVa;
+          UINT64  ResetHandler;
+          UINTN   Pad;
+          UINT8   *CpuDataHost;
+
+          //
+          // The kernel checks cpu_data[+0xB8] for equality against
+          // EntryPoint+0x77B (first branch) / EntryPoint-0x420; on mismatch
+          // it walks to the DEADB001 spin.  The fake structure must live in
+          // the image so the check passes: place it at EntryPoint+0x77B in
+          // the NOP padding.
+          //
+          CpuDataVa     = EntryPoint + 0x77B;
+          ResetHandler  = EntryPoint + 0x77B;
+          CpuDataHost   = KernelBuffer + SegFileOff[FirstSeg] + 0x77B;
+          Pad = SegVmSize[FirstSeg] > 0x77B + 0x1000 ? 0x1000 : 0;
+
+          if (Pad != 0) {
+            ZeroMem (CpuDataHost, Pad);
+          }
+
+          //
+          // CPU_PHYS_ID at +0x1C8 must match MPIDR_EL1 & 0xff (= 0 with the
+          // virtual MPIDR reported by the DBT).
+          //
+          *(UINT32 *)(CpuDataHost + 0x1C8) = 0;
+
+          //
+          // Stacks: the kernel does 'mov sp, cpu_data[+0x18]' (intstack) and
+          // again 'mov sp, cpu_data[+0x28]' (excepstack), so both must be
+          // usable host addresses (identity-mapped by the DBT).
+          //
+          *(UINT64 *)(CpuDataHost + 0x18) = (UINT64)(UINTN)StackBase + StackSize;
+          *(UINT64 *)(CpuDataHost + 0x28) = (UINT64)(UINTN)StackBase + StackSize;
+
+          //
+          // The +0xB8 reset handler is only checked for being nonzero (the
+          // zero case falls into the DEADB001 spin), a value is enough.
+          //
+          *(UINT64 *)(CpuDataHost + 0xB8) = ResetHandler;
+          CpuData = CpuDataHost;
+
+          DEBUG ((DEBUG_INFO, "DirectKernel: cpu data entries table va=0x%llx host=%p\n",
+                  TableVa, HostTable));
+          DEBUG ((DEBUG_INFO, "DirectKernel: fake cpu_data va=0x%llx host=%p phys-id=%u\n",
+                   CpuDataVa, CpuData, *(UINT32 *)(CpuData + 0x1C8)));
         }
 
         //
-        // CPU_PHYS_ID at +0x1C8 must match MPIDR_EL1 & 0xff (= 0 with the
-        // virtual MPIDR reported by the DBT); the buffer is zeroed already.
+        // Write the handoff: entry[0] carries the per-CPU vaddr (kernel reads
+        // the +8 slot) as a VA inside the kernel image, and the remaining 31
+        // entries are cleared so the scan cannot dereference stale file data.
         //
-        *(UINT32 *)(CpuData + 0x1C8) = 0;
-
-        //
-        // Write the handoff: entry[0] carries the per-CPU data address (the
-        // kernel reads the +8 slot), and the remaining 31 entries are cleared
-        // so the scan cannot dereference stale file data.
-        //
-        *(UINT64 *)(HostTable + 0) = (UINT64)(UINTN)CpuData;
-        *(UINT64 *)(HostTable + 8) = (UINT64)(UINTN)CpuData;
+        *(UINT64 *)(HostTable + 0) = (UINT64)EntryPoint + 0x77B;
+        *(UINT64 *)(HostTable + 8) = (UINT64)EntryPoint + 0x77B;
         ZeroMem (HostTable + 16, 32 * 16 - 16);
 
-        DEBUG ((DEBUG_INFO, "DirectKernel: cpu data entries table va=0x%llx host=%p\n",
-                TableVa, HostTable));
-        DEBUG ((DEBUG_INFO, "DirectKernel: per-CPU data host=%p phys-id=%u\n",
-                CpuData, *(UINT32 *)(CpuData + 0x1C8)));
         break;
       }
     }
@@ -1301,7 +1345,7 @@ SKIP_READ_APPLE_KERNEL:
     // stale file data and faults dereferencing it.
     //
     SetupCpuDataEntries (KernelBuffer, SegCount, SegVmAddr, SegVmSize,
-                         SegFileOff, EntryPoint);
+                         SegFileOff, EntryPoint, StackBuffer, StackSize);
 
     DEBUG ((DEBUG_INFO, "DirectKernel: dispatch start pc=0x%llx maxsteps=%u\n",
             ArmContext.PC, MaxSteps));
