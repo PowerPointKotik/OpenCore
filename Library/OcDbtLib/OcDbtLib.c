@@ -465,6 +465,10 @@ STATIC VOID EmitShiftRcx (UINT8 **P, UINT8 Kind, UINT8 Amt) {
   else { EmitRorRcxImm(P, Amt); }
 }
 
+// IMUL RAX, RCX (REX.W 0F AF C1); 32-bit IMUL EAX, ECX (0F AF C1)
+STATIC VOID EmitImulRaxRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0x0F); EmitByte(P, 0xAF); EmitByte(P, 0xC1); }
+STATIC VOID EmitImulEaxEcx (UINT8 **P) { EmitByte(P, 0x0F); EmitByte(P, 0xAF); EmitByte(P, 0xC1); }
+
 // NOT / NEG RAX, zero-extend EAX (32-bit truncation)
 STATIC VOID EmitNotRax (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xD0); }
 STATIC VOID EmitNotRcx (UINT8 **P) { EmitRexW(P); EmitByte(P, 0xF7); EmitByte(P, 0xD1); }
@@ -1864,6 +1868,38 @@ STATIC UINTN DbtTranslateOne (
                       ShiftKind, ShiftAmt, IsW, Cond, (UINT8)Nzcv);
       EmitNop(&P);
       return (UINTN)(P - X86Buf);
+    } else if (Sub == 0xD8) {
+      //
+      // Data processing — 3-source (MADD/MSUB/MUL/MNEG).
+      //   [28:21] = 11011000 selects the multiply-add group; sf (bit 31)
+      //   == 1 selects the 64-bit form, sf == 0 the 32-bit form.
+      //   Bit 15 = 0 selects the accumulate form (MADD/MUL), bit 15 = 1
+      //   the subtract (MSUB/MNEG).  Ra == 31 (XZR) aliases MUL / MNEG.
+      //
+      UINT32  S15   = (Inst >> 15) & 1;   // 0=MADD/MUL, 1=MSUB/MNEG
+      UINT32  Ra    = (Inst >> 10) & 0x1F;
+      UINT32  RaOff = (Ra == 31) ? 0 : ArmRegXOff(Ra);
+      BOOLEAN IsSub = S15;
+
+      DBG((DEBUG_INFO, "DBT_ASM:    %s %s%d, %s%d, %s%d, %s%d\n",
+               IsSub ? "MSUB" : "MADD", IsW ? "W" : "X", Rd,
+               IsW ? "W" : "X", Rn, IsW ? "W" : "X", Rm, IsW ? "W" : "X", Ra));
+
+      if (Rn == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, RnOff); }
+      if (IsW) EmitTrunc32(&P);
+      if (Rm == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, RmOff); }
+      if (IsW) { EmitByte(&P, 0x89); EmitByte(&P, 0xC9); }   // MOV ECX, ECX
+      if (IsW) { EmitImulEaxEcx(&P); } else { EmitImulRaxRcx(&P); }   // RAX = Rn*Rm
+      if (IsW) EmitTrunc32(&P);
+      EmitByte(&P, 0x50);                                        // PUSH RAX (product)
+      if (Ra == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, RaOff); }
+      if (IsW) EmitTrunc32(&P);
+      EmitByte(&P, 0x59);                                        // POP RCX (product)
+      if (IsSub) { EmitSubRaxRcx(&P); } else { EmitAddRaxRcx(&P); }   // RAX = Ra ± product
+      if (IsW) EmitTrunc32(&P);
+      if (Rd != 31) EmitStoreRax(&P, RdOff);
+      EmitNop(&P);
+      return (UINTN)(P - X86Buf);
     } else {
       DBG((DEBUG_INFO, "DBT_ASM:    op0=d sub=0x%x -> NOP\n", Sub));
       EmitNop(&P);
@@ -2189,14 +2225,30 @@ STATIC UINTN DbtTranslateOne (
         UINT8 Opt  = (Inst >> 13) & 7;
         UINT8 S    = (Inst >> 12) & 1;
 
-        if (Opt == 3) {
-          UINTN RmOff = ArmRegXOff(Rm);
-          DBG((DEBUG_INFO, "DBT_ASM:    %s X%d, [X%d, X%d%s]\n", Opc == 1 ? "LDR" : "STR",
-               Rt, Rn, Rm, S ? ", lsl #3" : ""));
+if (Opt == 2 || Opt == 6 || Opt == 3) {
+          //
+          // register-offset: [Xn, Xm, <extend>]
+          //   Opt (bits 15:13) in the data-type LD/ST encodings:
+          //     2 = UXTW, 6 = SXTW, 3 = UXTX/SXTX (plain 64-bit index)
+          //   (option 0/1/4/5/7 select the LDADD/LDSET-family atomics or
+          //   reserved encodings, never a plain store — see ldclemh tests.)
+          //   S (bit 12) selects the scaled shift: index scaled by size.
+          UINT8 ShAmt = (S == 1) ? Size : 0;
+
+          DBG((DEBUG_INFO, "DBT_ASM:    %sX%d, [X%d + %s X%d%s]\n",
+               Opc == 1 ? "LDR" : "STR", Rt, Rn, (Opt == 3) ? "" : "w",
+               Rm, S ? " lsl #1" : ""));
+
           EmitLoadRcx(&P, RnOffL);
-          EmitLoadRax(&P, RmOff);
-          if (S) { EmitRexW(&P); EmitByte(&P, 0xC1); EmitByte(&P, 0xE0); EmitByte(&P, 0x03); }  // SHL RAX, 3
-          EmitRexW(&P); EmitByte(&P, 0x01); EmitByte(&P, 0xC1);        // ADD RCX, RAX
+          if (Rm == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(Rm)); }
+
+          // Apply the extension.
+          if (Opt == 2) { EmitTrunc32(&P); }               // UXTW: MOV EAX, EAX
+          else if (Opt == 6) { EmitRexW(&P); EmitByte(&P, 0x63); EmitByte(&P, 0xC0); } // MOVSXD RAX, EAX
+          // Opt == 3 — already full-width 64-bit index.
+
+          if (ShAmt) { EmitRexW(&P); EmitByte(&P, 0xC1); EmitByte(&P, 0xE0); EmitByte(&P, ShAmt); }  // SHL RAX, ShAmt
+          EmitRexW(&P); EmitByte(&P, 0x01); EmitByte(&P, 0xC1); // ADD RCX, RAX
           EmitCallMapHelper(&P);
           EmitMemAccess(&P, Size, Opc, (Inst >> 31) & 1, (UINT32)RtOff);
           return (UINTN)(P - X86Buf);
