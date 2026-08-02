@@ -1921,6 +1921,46 @@ STATIC UINTN DbtTranslateOne (
                       ShiftKind, ShiftAmt, IsW, Cond, (UINT8)Nzcv);
       EmitNop(&P);
       return (UINTN)(P - X86Buf);
+    } else if (Sub == 0xD6 || Sub == 0xD7) {
+      //
+      // UDIV / SDIV: Xd = Xn / Xm (quotient only).  [28:21] = 11010110
+      // (UDIV) / 11010111 (SDIV); sf (bit 31) selects the 64-bit form.
+      // x86 DIV/IDIV divides RDX:RAX by the divisor and clobbers RDX with
+      // the remainder — RDX is a transient scratch in the emitted code, so
+      // that is safe.  A zero divisor is guarded (Rd left unchanged).
+      //
+      UINT32  RnU = (Inst >> 5) & 0x1F;
+      UINT32  RmU = (Inst >> 16) & 0x1F;
+      BOOLEAN IsSdiv = ((Inst >> 10) & 0x3F) == 3;
+
+      DBG((DEBUG_INFO, "DBT_ASM:    %s %s%d, %s%d, %s%d\n",
+               IsSdiv ? "SDIV" : "UDIV", IsW ? "W" : "X", Rd,
+               IsW ? "W" : "X", RnU, IsW ? "W" : "X", RmU));
+
+      if (RnU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RnU)); }
+      if (IsW) EmitTrunc32(&P);
+      if (RmU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, ArmRegXOff(RmU)); }
+      if (IsW) { EmitByte(&P, 0x89); EmitByte(&P, 0xC9); }   // MOV ECX, ECX
+
+      // TEST RCX/ECX, RCX/ECX ; JZ done — guard the zero divisor.
+      if (IsW) { EmitByte(&P, 0x85); EmitByte(&P, 0xC9); }
+      else     { EmitRexW(&P); EmitByte(&P, 0x85); EmitByte(&P, 0xC9); }
+      EmitByte(&P, 0x74);
+      EmitByte(&P, (UINT8)(IsSdiv ? (IsW ? 3 : 5) : (IsW ? 4 : 6)));
+
+      if (IsSdiv) {
+        if (IsW) { EmitByte(&P, 0x99); }                     // CDQ
+        else     { EmitRexW(&P); EmitByte(&P, 0x99); }       // CQO
+      } else {
+        if (IsW) { EmitByte(&P, 0x33); EmitByte(&P, 0xD2); } // XOR EDX, EDX
+        else     { EmitRexW(&P); EmitByte(&P, 0x31); EmitByte(&P, 0xD2); }  // XOR RDX, RDX
+      }
+      if (IsW) { EmitByte(&P, 0xF7); EmitByte(&P, 0xF1); }   // DIV/IDIV ECX
+      else     { EmitRexW(&P); EmitByte(&P, 0xF7); EmitByte(&P, 0xF9); }    // DIV/IDIV RCX
+
+      if (Rd != 31) EmitStoreRax(&P, ArmRegXOff(Rd));
+      EmitNop(&P);
+      return (UINTN)(P - X86Buf);
     } else if (Sub == 0xD8) {
       //
       // Data processing — 3-source (MADD/MSUB/MUL/MNEG).
