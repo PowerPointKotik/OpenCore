@@ -70,7 +70,12 @@ STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|cr
 // execution (including cached loop bodies) emits its full dump.  This can
 // overrun the firmware log, but it is the requested exhaustive trace.
 //
-#define DBT_FULL_VERBOSE  1
+// Default build: log only the first execution of each block so the 256 KB
+// OpenCore log is not consumed by re-dumping cached loop bodies; a fresh
+// block still prints its decode/registers, and spin-liveness lines keep the
+// loop iterations visible.
+//
+#define DBT_FULL_VERBOSE  0
 
 STATIC BOOLEAN      gDbtTraceEnabled = TRUE;
 
