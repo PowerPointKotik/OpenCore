@@ -2853,6 +2853,24 @@ VOID DbtFreeContext (DBT_CONTEXT *Ctx) {
 UINT64 DbtTranslateVaToPa (DBT_CONTEXT *Ctx, UINT64 Va) {
   UINTN  I;
 
+  //
+  // Kernel tagged-pointer globals: the compiler emits global-array accesses
+  // as a full 64-bit add of the base plus the index, then MOVK #0x2BAD into
+  // the top 16 bits (e.g. kvprintf's digits table: 0x2BADFE000704E436).  On
+  // real arm64e the tag is a pointer-authentication hint the memory accessor
+  // strips; the DBT must do the same, otherwise the tagged VA falls through
+  // to the identity mapping, the translated load faults on a host address
+  // that does not exist, the digit comes back zeroed, and the firmware fault
+  // handler can corrupt the translation chain (observed: guest PC=0xAE right
+  // after the %d digits loop ran with working UDIV).  Restore the canonical
+  // kernel address (low 48 bits unchanged, top 16 -> 0xFFFF).
+  //
+  if ((Va >> 48) == 0x2BAD) {
+    Va = (Va & 0xFFFFFFFFFFFFull) | 0xFFFF000000000000ull;
+    DBG((DEBUG_INFO, "DBT_MMU: tagged ptr 0x%llx -> kernel 0x%llx\n",
+         gDbtHelperVa, Va));
+  }
+
   if (Ctx != NULL) {
     for (I = 0; I < Ctx->SegCount; I++) {
       if (Va >= Ctx->SegVmAddr[I] && Va < Ctx->SegVmAddr[I] + Ctx->SegVmSize[I]) {
