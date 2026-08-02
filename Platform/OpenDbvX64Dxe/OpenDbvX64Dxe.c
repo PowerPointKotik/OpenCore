@@ -1445,13 +1445,7 @@ SKIP_READ_APPLE_KERNEL:
       UINTN  PhysWinSize = EFI_PAGES_TO_SIZE (256);  // 1MB
       UINT8 *PhysWinBuffer;
       Status = gBS->AllocatePages (
-                      EfiAllocateAnyPages,
-                      EfiLoaderData,
-                      EFI_SIZE_TO_PAGES (PhysWinSize),
-                      (EFI_PHYSICAL_ADDRESS *)&PhysWinBuffer
-                      );
-      Status = gBS->AllocatePages (
-                      EfiAllocateAnyPages,
+                      AllocateAnyPages,
                       EfiLoaderData,
                       EFI_SIZE_TO_PAGES (PhysWinSize),
                       (EFI_PHYSICAL_ADDRESS *)&PhysWinBuffer
