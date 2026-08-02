@@ -69,6 +69,16 @@ STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|cr
 STATIC BOOLEAN      gDbtTraceEnabled = FALSE;
 
 //
+// Fresh-block marker.  The driver calls DbtTranslateBlock (which registers
+// the block in the translation cache) before DbtExecute, so the cache alone
+// cannot distinguish first from later executions: DbtTranslateBlock records
+// the PC of every block it actually emits here, and DbtExecute consumes the
+// marker to raise the trace gate exactly once per emitted block.
+//
+STATIC BOOLEAN      gDbtLastNew   = FALSE;
+STATIC UINT64       gDbtLastNewPc = 0;
+
+//
 // Spin detector: when the guest PC repeats across DbtExecute calls (a
 // busy loop, e.g. a secondary-CPU spin or a stuck CBZ), log one short
 // liveness line every 4096 iterations instead of one per iteration.
@@ -79,6 +89,19 @@ STATIC BOOLEAN      gDbtTraceEnabled = FALSE;
 STATIC UINT64       gDbtLastPc[3] = { 0, 0, 0 };
 STATIC UINTN        gDbtLastIdx   = 0;
 STATIC UINTN        gDbtSpinIters = 0;
+
+//
+// Chain-loop watchdog.  A chained branch (E9 into a cached block) never
+// returns to the dispatcher, so an infinite loop inside translated code
+// would hang the machine with no log output.  Every chained jump emitted by
+// EmitJmpBlock decrements gDbtChainBudget; when it hits zero the jump turns
+// into an exit back to DbtExecute, which reports gDbtSpinPc.  DbtExecute
+// refills the budget before each dispatch, so a spin loop logs a liveness
+// line every 4096 dispatches (4096 * budget iterations).
+//
+STATIC UINTN        gDbtChainBudget   = 0;
+STATIC UINT64       gDbtSpinPc        = 0;
+STATIC UINT32       gDbtChainSpinLogs = 0;
 
 //
 // Host-side VA->host-address helper invoked by the translated LDR/STR
@@ -948,12 +971,35 @@ STATIC EFI_STATUS DbtMapInsert (IN OUT DBT_CONTEXT *Ctx, IN UINT64 Pc, IN UINT32
   return EFI_SUCCESS;
 }
 
-// E9 rel32 — unconditional jump to a translated block.
-STATIC VOID EmitJmpBlock (UINT8 **P, IN DBT_CONTEXT *Ctx, IN UINT32 TargetOff) {
-  INTN Rel = (INTN)((UINT8 *)Ctx->TranslatedCode + TargetOff) - (INTN)(*P + 5);
+//
+// E9 rel32 — unconditional jump to a translated block, wrapped in the
+// chain-loop watchdog: gDbtChainBudget--; if it hits zero, record the guest
+// target PC in gDbtSpinPc and take the shared chain-exit stub back to
+// DbtExecute instead of looping forever.  RAX/RCX are scratch at a terminal
+// branch, so the trampoline may clobber them.
+//
+STATIC VOID EmitJmpBlock (UINT8 **P, IN DBT_CONTEXT *Ctx, IN UINT32 TargetOff, IN UINT64 TargetPc) {
+  UINT8  *JmpTarget = (UINT8 *)Ctx->TranslatedCode + TargetOff;
+  UINT8  *Slot;
+  INTN    Rel;
 
-  EmitByte(P, 0xE9);
-  EmitDword(P, (UINT32)Rel);
+  EmitMovImm(P, (UINT64)(UINTN)&gDbtChainBudget);     // mov rax, &gDbtChainBudget
+  EmitByte(P, 0x48); EmitByte(P, 0xFF); EmitByte(P, 0x08);  // dec qword [rax]
+
+  Slot = *P;
+  EmitByte(P, 0x74); EmitByte(P, 0);                  // jz spin_exit (patched)
+
+  Rel = (INTN)(JmpTarget - (*P + 5));
+  EmitByte(P, 0xE9); EmitDword(P, (UINT32)Rel);       // jmp cached block
+
+  // spin_exit: gDbtSpinPc = TargetPc; jmp chain-exit stub
+  EmitMovImm(P, TargetPc);                            // mov rax, TargetPc
+  EmitMovRcxImm(P, (UINT64)(UINTN)&gDbtSpinPc);       // mov rcx, &gDbtSpinPc
+  EmitByte(P, 0x48); EmitByte(P, 0x89); EmitByte(P, 0x01);  // mov [rcx], rax
+  Rel = (INTN)((UINT8 *)Ctx->TranslatedCode + Ctx->ChainExitOff - (*P + 5));
+  EmitByte(P, 0xE9); EmitDword(P, (UINT32)Rel);       // jmp chain-exit stub
+
+  Slot[1] = (UINT8)((*P) - (Slot + 2));
 }
 
 //
@@ -961,7 +1007,7 @@ STATIC VOID EmitJmpBlock (UINT8 **P, IN DBT_CONTEXT *Ctx, IN UINT32 TargetOff) {
 // The not-taken path stores the fallthrough PC and returns to the driver
 // (same shape as EmitCondBranch, minus the target PC store).
 //
-STATIC UINTN EmitCondBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINT32 Cond, UINT32 TargetOff, UINT64 Fallthrough) {
+STATIC UINTN EmitCondBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINT32 Cond, UINT32 TargetOff, UINT64 TargetPc, UINT64 Fallthrough) {
   UINT8  *Start = *P;
   UINT8  *Ldone = NULL;
   UINT8   NoTargets[1] = { 0 };
@@ -974,7 +1020,7 @@ STATIC UINTN EmitCondBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINT32 Cond,
 
   EmitCondTrueFromPstate (P, Cond, &Ldone);
 
-  EmitJmpBlock(P, Ctx, TargetOff);
+  EmitJmpBlock(P, Ctx, TargetOff, TargetPc);
 
   PatchJcc (&Ldone, NoTargets, 1, *P, *P);
   return (UINTN)(*P - Start);
@@ -983,7 +1029,7 @@ STATIC UINTN EmitCondBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINT32 Cond,
 //
 // CBZ/CBNZ chained: taken path jumps into the cached block.
 //
-STATIC UINTN EmitCompareBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINTN RtOff, UINT32 TargetOff, UINT64 Fallthrough, UINT8 SkipJcc) {
+STATIC UINTN EmitCompareBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINTN RtOff, UINT32 TargetOff, UINT64 TargetPc, UINT64 Fallthrough, UINT8 SkipJcc) {
   UINT8  *Start = *P;
   UINT8  *Slot;
 
@@ -993,7 +1039,7 @@ STATIC UINTN EmitCompareBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINTN RtO
   EmitMovImm(P, Fallthrough);
   EmitStoreRax(P, (UINT32)ArmRegPcOff());
   EmitJccSlot(P, SkipJcc, &Slot);
-  EmitJmpBlock(P, Ctx, TargetOff);
+  EmitJmpBlock(P, Ctx, TargetOff, TargetPc);
   Slot[1] = (UINT8)((*P) - (Slot + 2));
 
   return (UINTN)(*P - Start);
@@ -1002,7 +1048,7 @@ STATIC UINTN EmitCompareBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINTN RtO
 //
 // TBZ/TBNZ chained: taken path jumps into the cached block.
 //
-STATIC UINTN EmitTestBitBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINTN RtOff, UINT32 Bit, UINT32 TargetOff, UINT64 Fallthrough, UINT8 SkipJcc) {
+STATIC UINTN EmitTestBitBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINTN RtOff, UINT32 Bit, UINT32 TargetOff, UINT64 TargetPc, UINT64 Fallthrough, UINT8 SkipJcc) {
   UINT8  *Start = *P;
   UINT8  *Slot;
 
@@ -1013,7 +1059,7 @@ STATIC UINTN EmitTestBitBranchChained (UINT8 **P, IN DBT_CONTEXT *Ctx, UINTN RtO
   EmitMovImm(P, Fallthrough);
   EmitStoreRax(P, (UINT32)ArmRegPcOff());
   EmitJccSlot(P, SkipJcc, &Slot);
-  EmitJmpBlock(P, Ctx, TargetOff);
+  EmitJmpBlock(P, Ctx, TargetOff, TargetPc);
   Slot[1] = (UINT8)((*P) - (Slot + 2));
 
   return (UINTN)(*P - Start);
@@ -1530,7 +1576,9 @@ STATIC UINTN DbtTranslateOne (
       // ADR / ADRP.  Note bit 23 is immhi bit 20, so both Sub==0 and
       // Sub==1 land here: sf(31) immlo(30:29) 10000(28:24) immhi(23:5) Rd(4:0)
       //
-      BOOLEAN IsAdrp = (Inst >> 31) & 1;
+      // bit30 is the ADRP/ADR op bit (0 = ADRP, 1 = ADR).  bit31 is the
+      // always-set sf bit and must NOT be used here.
+      BOOLEAN IsAdrp = ((Inst >> 30) & 1) == 0;
       INT64   Imm    = ((Inst >> 5) & 0x7FFFF) << 2;      // immhi << 2
       Imm           |= (Inst >> 29) & 3;                  // immlo
       if (Imm & (1LL << 20)) { Imm |= ~((INT64)0x1FFFFF); }  // sign-extend 21
@@ -1555,11 +1603,11 @@ STATIC UINTN DbtTranslateOne (
     UINT32 Op24 = (Inst >> 24) & 1;
 
     if (Op24 == 0) {
-      // ADR / ADRP
+      // ADR / ADRP (bit30 is the op bit, as above)
       INT64 Off = ((Inst >> 5) & 0x7FFFF) << 2;
       INT64 Val = InstAddr + ((Off << 43) >> 43);
-      if ((Inst >> 31) & 1) Val &= ~0xFFF;  // ADRP: page-align
-      DBG((DEBUG_INFO, "DBT_ASM:    ADR%s X%d, 0x%llx\n", ((Inst>>31)&1)?"P":"", Rd, Val));
+      if (((Inst >> 30) & 1) == 0) Val &= ~0xFFF;  // ADRP: page-align
+      DBG((DEBUG_INFO, "DBT_ASM:    ADR%s X%d, 0x%llx\n", ((Inst>>30)&1)==0 ? "P" : "", Rd, Val));
       EmitMovImm(&P, Val);
       EmitStoreRax(&P, RdOff);
     } else {
@@ -1837,7 +1885,7 @@ STATIC UINTN DbtTranslateOne (
         // the cached target block.
         UINT32 TgtOff = DbtMapLookup(Ctx, (UINT64)Target);
         if (TgtOff != 0xFFFFFFFF) {
-          return EmitCondBranchChained(&P, Ctx, Cond, TgtOff, InstAddr + 4);
+          return EmitCondBranchChained(&P, Ctx, Cond, TgtOff, (UINT64)Target, InstAddr + 4);
         }
       }
       return EmitCondBranch(&P, Cond, (UINT64)Target, InstAddr + 4);
@@ -1858,7 +1906,7 @@ STATIC UINTN DbtTranslateOne (
       {
         UINT32 TgtOff = DbtMapLookup(Ctx, (UINT64)Target);
         if (TgtOff != 0xFFFFFFFF) {
-          EmitJmpBlock(&P, Ctx, TgtOff);
+          EmitJmpBlock(&P, Ctx, TgtOff, (UINT64)Target);
         } else {
           EmitMovImm(&P, (UINT64)Target);
           EmitStoreRax(&P, PcOff);
@@ -1877,7 +1925,7 @@ STATIC UINTN DbtTranslateOne (
       {
         UINT32 TgtOff = DbtMapLookup(Ctx, (UINT64)Target);
         if (TgtOff != 0xFFFFFFFF) {
-          return EmitCompareBranchChained(&P, Ctx, RtOff, TgtOff, InstAddr + 4, NonZero ? 0x74 : 0x75);
+          return EmitCompareBranchChained(&P, Ctx, RtOff, TgtOff, (UINT64)Target, InstAddr + 4, NonZero ? 0x74 : 0x75);
         }
       }
       return EmitCompareBranch(&P, RtOff, (UINT64)Target, InstAddr + 4, NonZero ? 0x74 : 0x75);
@@ -1892,7 +1940,7 @@ STATIC UINTN DbtTranslateOne (
       {
         UINT32 TgtOff = DbtMapLookup(Ctx, (UINT64)Target);
         if (TgtOff != 0xFFFFFFFF) {
-          return EmitTestBitBranchChained(&P, Ctx, RtOff, Bit, TgtOff, InstAddr + 4, NonZero ? 0x73 : 0x72);
+          return EmitTestBitBranchChained(&P, Ctx, RtOff, Bit, TgtOff, (UINT64)Target, InstAddr + 4, NonZero ? 0x73 : 0x72);
         }
       }
       return EmitTestBitBranch(&P, RtOff, Bit, (UINT64)Target, InstAddr + 4, NonZero ? 0x73 : 0x72);
@@ -2335,10 +2383,11 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
   // from a spin-liveness line every 4096 repeats.
   //
   {
-    BOOLEAN Fresh = !DbtBlockCached (Ctx, ArmState->PC);
+    BOOLEAN Fresh = gDbtLastNew && (gDbtLastNewPc == ArmState->PC);
     BOOLEAN Known = FALSE;
     UINTN   I;
 
+    gDbtLastNew = FALSE;
     gDbtTraceEnabled = Fresh;
     for (I = 0; I < 3; I++) {
       if (gDbtLastPc[I] == ArmState->PC) {
@@ -2426,6 +2475,7 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
   }
 
   // Call translated code with &ArmState as arg (already in RBX from prologue)
+  gDbtChainBudget = (1u << 20);
   VOID (*Entry)(DBT_ARM64_STATE *) = (VOID(*)(DBT_ARM64_STATE*))Ctx->TranslatedCode;
   Entry(&Ctx->ArmState);
 
@@ -2434,6 +2484,21 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
 
   // Copy state back
   CopyMem(ArmState, &Ctx->ArmState, sizeof(DBT_ARM64_STATE));
+
+  //
+  // Chain-loop watchdog hit: a chained branch exhausted its budget and
+  // exited instead of looping forever.  Resume at the reported target PC
+  // (the block the chain would have jumped into) and log one liveness line
+  // per 4096 dispatches so the spin stays visible in the log.
+  //
+  if (gDbtSpinPc != 0) {
+    if (((++gDbtChainSpinLogs) & 0xFFF) == 1) {
+      DBG((DEBUG_INFO, "DBT: chain spin pc=0x%llx\n", gDbtSpinPc));
+    }
+    ArmState->PC = gDbtSpinPc;
+    gDbtSpinPc   = 0;
+  }
+
   DbtDumpState ("EXIT", ArmState);
 }
 
@@ -2477,6 +2542,23 @@ EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, U
     Ctx->JumpSlot = Buf;
     EmitByte(&Buf, 0xE9); EmitDword(&Buf, 0);
     DBG((DEBUG_INFO, "DBT: Jump slot at %p\n", Ctx->JumpSlot));
+
+    //
+    // Chain-exit stub: full epilogue that unwinds a chain-loop watchdog hit
+    // back into DbtExecute.  Only reached via the spin_exit branch of the
+    // trampoline emitted by EmitJmpBlock.
+    //
+    Ctx->ChainExitOff = (UINT32)(Buf - (UINT8 *)Ctx->TranslatedCode);
+    EmitRexW(&Buf); EmitByte(&Buf, 0x81); EmitByte(&Buf, 0xC4);  // add rsp, 0x100
+    EmitDword(&Buf, 0x100);
+    EmitByte(&Buf, 0x41); EmitByte(&Buf, 0x5F);               // pop r15
+    EmitByte(&Buf, 0x41); EmitByte(&Buf, 0x5E);               // pop r14
+    EmitByte(&Buf, 0x41); EmitByte(&Buf, 0x5D);               // pop r13
+    EmitByte(&Buf, 0x41); EmitByte(&Buf, 0x5C);               // pop r12
+    EmitByte(&Buf, 0x5B);                                     // pop rbx
+    EmitByte(&Buf, 0xC9);                                     // leave
+    EmitByte(&Buf, 0xC3);                                     // ret
+    DBG((DEBUG_INFO, "DBT: Chain exit stub at %u bytes\n", Ctx->ChainExitOff));
   }
 
   Ctx->LastBlockStart = Buf;
@@ -2487,6 +2569,10 @@ EFI_STATUS DbtTranslateBlock (DBT_CONTEXT *Ctx, VOID *ArmCode, UINTN CodeSize, U
   // can re-enter loop bodies without re-translating them.
   //
   (VOID)DbtMapInsert (Ctx, BaseAddr, (UINT32)(Buf - (UINT8 *)Ctx->TranslatedCode));
+
+  // Raise the fresh-block marker consumed by DbtExecute's trace gate.
+  gDbtLastNew   = TRUE;
+  gDbtLastNewPc = BaseAddr;
 
   //
   // Emit the runtime block-entry trace: guest PC is known at translation

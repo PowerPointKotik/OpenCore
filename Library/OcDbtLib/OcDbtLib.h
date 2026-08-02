@@ -53,6 +53,7 @@ typedef struct DBT_CONTEXT {
   UINTN            CodeCapacity;
   UINT8           *JumpSlot;
   UINT8           *LastBlockStart;
+  UINT32           ChainExitOff;  // offset of the chain-loop watchdog epilogue stub
   //
   // Guest PC -> translated-block cache (Rosetta 2 style).  BlockMapPc is a
   // sorted array of block-start guest PCs, BlockMapOff the parallel offsets
