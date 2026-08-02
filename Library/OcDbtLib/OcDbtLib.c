@@ -75,11 +75,12 @@ STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|cr
 // block still prints its decode/registers, and spin-liveness lines keep the
 // loop iterations visible.
 //
-// The firmware log buffer is now 32 MB, so full unthrottled verbose is safe:
-// every block execution (including cached loop bodies) emits its decode plus
-// register dump.  Requested exhaustive trace.
+// Full unthrottled verbose floods the UART for every cached loop body and
+// makes boot visibly crawl — keep DBT_FULL_VERBOSE off.  The 32 MB log buffer
+// leaves plenty of room for the bounded first-execution trace.  The %s
+// dispatch spy (DBT_DSP in DbtTraceBlock) is independent and stays on.
 //
-#define DBT_FULL_VERBOSE  1
+#define DBT_FULL_VERBOSE  0
 
 STATIC BOOLEAN      gDbtTraceEnabled = TRUE;
 
@@ -2876,23 +2877,24 @@ STATIC VOID DbtDumpState (IN CONST CHAR8 *Tag, IN DBT_ARM64_STATE *S) {
 }
 
 VOID DbtTraceBlock (VOID) {
-  if (!DBT_VERBOSE || !gDbtTraceEnabled || gDbtActiveState == NULL) return;
-  DBG((DEBUG_INFO, "DBT_BLK: pc=0x%llx x0=0x%llx lr=0x%llx\n",
-       gDbtTracePc, gDbtActiveState->X[0], gDbtActiveState->X[30]));
-
   //
-  // Temporary: kvprintf format dispatch at 0xBBEFECC0..0xBBEFE40 — print the
-  // conversion char (W12/W16) and scan pointer (X24) so we can see whether
-  // the '%s' -> 's' (=0x73) vs NUL (=0x00) index lands.  Short line so the
-  // firmware log capture keeps it intact.
+  // Lightweight (never gated by the verbose trace): spy on the kvprintf
+  // format dispatch block so the '%s' conversion index stays decodable
+  // without flooding the whole boot.  Short line, survives the firmware
+  // log capture mangles.
   //
-  if ((gDbtTracePc >= 0xFFFFFE000BBEFDE0ull) &&
+  if (gDbtActiveState != NULL &&
+      (gDbtTracePc >= 0xFFFFFE000BBEFDE0ull) &&
       (gDbtTracePc <= 0xFFFFFE000BBEFE40ull)) {
     DBG((DEBUG_INFO, "DBT_DSP: pc=0x%llx w12=0x%llx w16=0x%llx x22=0x%llx fmt=0x%llx\n",
          gDbtTracePc, gDbtActiveState->X[12] & 0xFFFFFFFF,
          gDbtActiveState->X[16] & 0xFFFFFFFF,
          gDbtActiveState->X[22], gDbtActiveState->X[0]));
   }
+
+  if (!DBT_VERBOSE || !gDbtTraceEnabled || gDbtActiveState == NULL) return;
+  DBG((DEBUG_INFO, "DBT_BLK: pc=0x%llx x0=0x%llx lr=0x%llx\n",
+       gDbtTracePc, gDbtActiveState->X[0], gDbtActiveState->X[30]));
 }
 
 VOID DbtTraceMemSt (VOID) {
