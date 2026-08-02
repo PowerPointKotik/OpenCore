@@ -75,7 +75,11 @@ STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|cr
 // block still prints its decode/registers, and spin-liveness lines keep the
 // loop iterations visible.
 //
-#define DBT_FULL_VERBOSE  0
+// The firmware log buffer is now 32 MB, so full unthrottled verbose is safe:
+// every block execution (including cached loop bodies) emits its decode plus
+// register dump.  Requested exhaustive trace.
+//
+#define DBT_FULL_VERBOSE  1
 
 STATIC BOOLEAN      gDbtTraceEnabled = TRUE;
 
@@ -2875,6 +2879,20 @@ VOID DbtTraceBlock (VOID) {
   if (!DBT_VERBOSE || !gDbtTraceEnabled || gDbtActiveState == NULL) return;
   DBG((DEBUG_INFO, "DBT_BLK: pc=0x%llx x0=0x%llx lr=0x%llx\n",
        gDbtTracePc, gDbtActiveState->X[0], gDbtActiveState->X[30]));
+
+  //
+  // Temporary: kvprintf format dispatch at 0xBBEFECC0..0xBBEFE40 — print the
+  // conversion char (W12/W16) and scan pointer (X24) so we can see whether
+  // the '%s' -> 's' (=0x73) vs NUL (=0x00) index lands.  Short line so the
+  // firmware log capture keeps it intact.
+  //
+  if ((gDbtTracePc >= 0xFFFFFE000BBEFDE0ull) &&
+      (gDbtTracePc <= 0xFFFFFE000BBEFE40ull)) {
+    DBG((DEBUG_INFO, "DBT_DSP: pc=0x%llx w12=0x%llx w16=0x%llx x22=0x%llx fmt=0x%llx\n",
+         gDbtTracePc, gDbtActiveState->X[12] & 0xFFFFFFFF,
+         gDbtActiveState->X[16] & 0xFFFFFFFF,
+         gDbtActiveState->X[22], gDbtActiveState->X[0]));
+  }
 }
 
 VOID DbtTraceMemSt (VOID) {
