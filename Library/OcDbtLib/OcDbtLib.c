@@ -1681,7 +1681,7 @@ STATIC UINTN DbtTranslateOne (
       UINT32 IsLoad = (Inst >> 22) & 1;
       INT32  Imm = (INT32)((Inst >> 15) & 0x7F);
       if (Imm & 0x40) { Imm |= ~0x7F; }  // sign-extend bit 6
-      Imm <<= 3;                         // scale by element size (8 bytes)
+      Imm <<= (Size == 0) ? 2 : 3;       // scale by element size (4 bytes W, 8 bytes X)
       UINT8  Rt2 = (Inst >> 10) & 0x1F;
       UINTN  RnOffP = (Rn == 31) ? SpOff : RnOff;
 
@@ -1695,7 +1695,7 @@ STATIC UINTN DbtTranslateOne (
         Imm = 0;
       }
 
-      if (Size == 2 && Form <= 3) {
+      if ((Size == 2 || Size == 0) && Form <= 3) {
         // Compute guest address into RCX (pre-index also writes it back to Rn)
         if (Form == 1) {
           // post-index: address = Rn, writeback happens after the access
@@ -1710,21 +1710,25 @@ STATIC UINTN DbtTranslateOne (
         }
 
         if (IsLoad) {
-          DBG((DEBUG_INFO, "DBT_ASM:    %s X%d, X%d, [X%d%s, #%d]%s\n",
-               Form == 0 ? "LDNP" : "LDP", Rt, Rt2, Rn,
+          DBG((DEBUG_INFO, "DBT_ASM:    %s %s%d, %s%d, [X%d%s, #%d]%s\n",
+               Form == 0 ? "LDNP" : "LDP",
+               (Size == 0) ? "W" : "X", Rt, (Size == 0) ? "W" : "X", Rt2, Rn,
                Rn == 31 ? "31" : "", Imm, Form == 1 ? "!" : ""));
           EmitCallMapHelper(&P);                   // RAX = host base
           EmitByte(&P, 0x50);                      // PUSH host base
-          // First load: MOV RAX, [RAX]
-          EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x00);
+          // First load
+          if (Size == 0) { EmitByte(&P, 0x8B); EmitByte(&P, 0x00); }        // MOV EAX, [RAX]
+          else { EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x00); }    // MOV RAX, [RAX]
           EmitStoreRax(&P, RtOff);
-          // Second load at +8: MOV RAX, [RCX+8]
+          // Second load
           EmitByte(&P, 0x59);                      // POP RCX (host base)
-          EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x41); EmitByte(&P, 0x08);
+          if (Size == 0) { EmitByte(&P, 0x8B); EmitByte(&P, 0x41); EmitByte(&P, 0x04); }  // MOV EAX, [RCX+4]
+          else { EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x41); EmitByte(&P, 0x08); }  // MOV RAX, [RCX+8]
           EmitStoreRax(&P, ArmRegXOff(Rt2));
         } else {
-          DBG((DEBUG_INFO, "DBT_ASM:    %s X%d, X%d, [X%d%s, #%d]%s\n",
-               Form == 0 ? "STNP" : "STP", Rt, Rt2, Rn,
+          DBG((DEBUG_INFO, "DBT_ASM:    %s %s%d, %s%d, [X%d%s, #%d]%s\n",
+               Form == 0 ? "STNP" : "STP",
+               (Size == 0) ? "W" : "X", Rt, (Size == 0) ? "W" : "X", Rt2, Rn,
                Rn == 31 ? "31" : "", Imm, Form == 1 ? "!" : ""));
           EmitCallMapHelper(&P);                   // RAX = host base
           EmitByte(&P, 0x50);                      // PUSH host base
@@ -1735,10 +1739,15 @@ STATIC UINTN DbtTranslateOne (
           EmitByte(&P, 0x59);                      // POP RCX (first value)
           EmitByte(&P, 0x58);                      // POP RAX (second value)
           EmitByte(&P, 0x5A);                      // POP RDX (host base)
-          // MOV [RDX], RCX   (48 89 0A)
-          EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x0A);
-          // MOV [RDX+8], RAX (48 89 42 08)
-          EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x42); EmitByte(&P, 0x08);
+          if (Size == 0) {
+            // MOV [RDX], ECX   (89 0A);  MOV [RDX+4], EAX (89 42 04)
+            EmitByte(&P, 0x89); EmitByte(&P, 0x0A);
+            EmitByte(&P, 0x89); EmitByte(&P, 0x42); EmitByte(&P, 0x04);
+          } else {
+            // MOV [RDX], RCX   (48 89 0A);  MOV [RDX+8], RAX (48 89 42 08)
+            EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x0A);
+            EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x42); EmitByte(&P, 0x08);
+          }
         }
 
         if (Form == 1) {
@@ -3031,6 +3040,28 @@ VOID DbtTraceBlock (VOID) {
       }
       gDbtRunSteps = 0;
       gDbtRunLines = 0;
+    }
+  }
+
+  //
+  // Never gated: spy on __doprnt entry/exit.  The putc callback arrives in
+  // x2 and is parked in x21 by the prologue (mov x21, x2); the epilogue
+  // restores x21 from [sp,#0xa0].  If x21 ends up as 0xAE before the next
+  // putchar call, this shows whether the caller passed a bad x2 or the
+  // corruption happened inside kvprintf.
+  //
+  if (gDbtActiveState != NULL) {
+    if (gDbtTracePc == 0xFFFFFE000BBEFB18ull) {
+      DBG((DEBUG_INFO, "DBT_ENT: x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx\n",
+           gDbtActiveState->X[0], gDbtActiveState->X[1],
+           gDbtActiveState->X[2], gDbtActiveState->X[3]));
+      DBG((DEBUG_INFO, "DBT_ENT: x19=0x%llx x20=0x%llx x21=0x%llx lr=0x%llx\n",
+           gDbtActiveState->X[19], gDbtActiveState->X[20],
+           gDbtActiveState->X[21], gDbtActiveState->X[30]));
+    } else if (gDbtTracePc == 0xFFFFFE000BBF0858ull) {
+      DBG((DEBUG_INFO, "DBT_EXT: x21=0x%llx x23=0x%llx x0=0x%llx lr=0x%llx\n",
+           gDbtActiveState->X[21], gDbtActiveState->X[23],
+           gDbtActiveState->X[0], gDbtActiveState->X[30]));
     }
   }
 
