@@ -1932,44 +1932,92 @@ STATIC UINTN DbtTranslateOne (
       return (UINTN)(P - X86Buf);
     } else if (Sub == 0xD6 || Sub == 0xD7) {
       //
-      // UDIV / SDIV: Xd = Xn / Xm (quotient only).  [28:21] = 11010110
-      // (UDIV) / 11010111 (SDIV); sf (bit 31) selects the 64-bit form.
-      // x86 DIV/IDIV divides RDX:RAX by the divisor and clobbers RDX with
-      // the remainder — RDX is a transient scratch in the emitted code, so
-      // that is safe.  A zero divisor is guarded (Rd left unchanged).
+      // 2-source data-processing AND the PAUTH (PAC/AUT) family share
+      // [28:21] = 0xD6/0xD7; the full encodings are told apart by the
+      // [31:26]+[20:10] mask:
+      //   UDIV  10011010110 000000 000010 Rm Rn Rd   (0x9AC00800 / W 0x1AC00800)
+      //   SDIV  10011010110 000000 000011 Rm Rn Rd   (0x9AC00C00 / W 0x1AC00C00)
+      //   LSLV/LSRV/ASRV/RORV                        (opc bits 8-11)
+      //   PACIA/PACDA/PACIB/PACDB/AUTIA/AUTIB/AUTDA/
+      //   AUTDB/XPACLRI/PACGA/IRG/...                (PAUTH: pointer
+      //   authentication — the DBT uses raw unsigned pointers, so signing
+      //   has no effect; IRG/PACGA tag insertion likewise -> NOP)
+      //
+      // Earlier this branch decoded every 0xD6/0xD7 as UDIV, which turned
+      // 'pacia x16, x17' (putchar pointer signing) into a division — the
+      // signed putc came out as 0xAE and 'blr x21' jumped there.
       //
       UINT32  RnU = (Inst >> 5) & 0x1F;
       UINT32  RmU = (Inst >> 16) & 0x1F;
-      BOOLEAN IsSdiv = ((Inst >> 10) & 0x3F) == 3;
+      UINT32  Mask = Inst & 0xFFE0FC00;
 
-      DBG((DEBUG_INFO, "DBT_ASM:    %s %s%d, %s%d, %s%d\n",
-               IsSdiv ? "SDIV" : "UDIV", IsW ? "W" : "X", Rd,
-               IsW ? "W" : "X", RnU, IsW ? "W" : "X", RmU));
+      if (Mask == 0x9AC00800 || Mask == 0x1AC00800 ||
+          Mask == 0x9AC00C00 || Mask == 0x1AC00C00) {
+        // UDIV / SDIV (quotient only).  x86 DIV/IDIV divides RDX:RAX by the
+        // divisor and clobbers RDX with the remainder — RDX is a transient
+        // scratch in the emitted code, so that is safe.  A zero divisor is
+        // guarded (Rd left unchanged).
+        BOOLEAN IsSdiv = (Mask == 0x9AC00C00 || Mask == 0x1AC00C00);
 
-      if (RnU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RnU)); }
-      if (IsW) EmitTrunc32(&P);
-      if (RmU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, ArmRegXOff(RmU)); }
-      if (IsW) { EmitByte(&P, 0x89); EmitByte(&P, 0xC9); }   // MOV ECX, ECX
+        DBG((DEBUG_INFO, "DBT_ASM:    %s %s%d, %s%d, %s%d\n",
+                 IsSdiv ? "SDIV" : "UDIV", IsW ? "W" : "X", Rd,
+                 IsW ? "W" : "X", RnU, IsW ? "W" : "X", RmU));
 
-      // TEST RCX/ECX, RCX/ECX ; JZ done — guard the zero divisor.
-      if (IsW) { EmitByte(&P, 0x85); EmitByte(&P, 0xC9); }
-      else     { EmitRexW(&P); EmitByte(&P, 0x85); EmitByte(&P, 0xC9); }
-      EmitByte(&P, 0x74);
-      EmitByte(&P, (UINT8)(IsSdiv ? (IsW ? 3 : 5) : (IsW ? 4 : 6)));
+        if (RnU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RnU)); }
+        if (IsW) EmitTrunc32(&P);
+        if (RmU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, ArmRegXOff(RmU)); }
+        if (IsW) { EmitByte(&P, 0x89); EmitByte(&P, 0xC9); }   // MOV ECX, ECX
 
-      if (IsSdiv) {
-        if (IsW) { EmitByte(&P, 0x99); }                     // CDQ
-        else     { EmitRexW(&P); EmitByte(&P, 0x99); }       // CQO
+        // TEST RCX/ECX, RCX/ECX ; JZ done — guard the zero divisor.
+        if (IsW) { EmitByte(&P, 0x85); EmitByte(&P, 0xC9); }
+        else     { EmitRexW(&P); EmitByte(&P, 0x85); EmitByte(&P, 0xC9); }
+        EmitByte(&P, 0x74);
+        EmitByte(&P, (UINT8)(IsSdiv ? (IsW ? 3 : 5) : (IsW ? 4 : 6)));
+
+        if (IsSdiv) {
+          if (IsW) { EmitByte(&P, 0x99); }                     // CDQ
+          else     { EmitRexW(&P); EmitByte(&P, 0x99); }       // CQO
+        } else {
+          if (IsW) { EmitByte(&P, 0x33); EmitByte(&P, 0xD2); } // XOR EDX, EDX
+          else     { EmitRexW(&P); EmitByte(&P, 0x31); EmitByte(&P, 0xD2); }  // XOR RDX, RDX
+        }
+        if (IsW) { EmitByte(&P, 0xF7); EmitByte(&P, 0xF1); }   // DIV/IDIV ECX
+        else     { EmitRexW(&P); EmitByte(&P, 0xF7); EmitByte(&P, 0xF9); }    // DIV/IDIV RCX
+
+        if (Rd != 31) EmitStoreRax(&P, ArmRegXOff(Rd));
+        EmitNop(&P);
+        return (UINTN)(P - X86Buf);
+      } else if (Mask == 0x9AC02000 || Mask == 0x1AC02000 ||
+                 Mask == 0x9AC02400 || Mask == 0x1AC02400 ||
+                 Mask == 0x9AC02800 || Mask == 0x1AC02800 ||
+                 Mask == 0x9AC02C00 || Mask == 0x1AC02C00) {
+        // LSLV / LSRV / ASRV / RORV: Xd = Xn shift-by-Xm (x86 masks the
+        // count in CL to 5/6 bits, matching ARM's W/X semantics).
+        UINT32 Opc = (Inst >> 10) & 0x3F;
+        CONST CHAR8 *Name = (Opc == 8) ? "LSLV" : (Opc == 9) ? "LSRV"
+                           : (Opc == 10) ? "ASRV" : "RORV";
+
+        DBG((DEBUG_INFO, "DBT_ASM:    %s %s%d, %s%d, %s%d\n",
+                 Name, IsW ? "W" : "X", Rd, IsW ? "W" : "X", RnU,
+                 IsW ? "W" : "X", RmU));
+
+        if (RnU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RnU)); }
+        if (IsW) EmitTrunc32(&P);
+        if (RmU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, ArmRegXOff(RmU)); }
+        if (IsW) { EmitByte(&P, 0x89); EmitByte(&P, 0xC9); }   // MOV ECX, ECX
+        if (IsW) { EmitByte(&P, 0xD3); }                       // SHL/SHR/SAR/ROR EAX, CL
+        else     { EmitRexW(&P); EmitByte(&P, 0xD3); }         // ... RAX, CL
+        EmitByte(&P, (UINT8)((Opc == 8) ? 0xE0 : (Opc == 9) ? 0xE8 : (Opc == 10) ? 0xF8 : 0xC8));
+        if (Rd != 31) EmitStoreRax(&P, ArmRegXOff(Rd));
+        EmitNop(&P);
+        return (UINTN)(P - X86Buf);
       } else {
-        if (IsW) { EmitByte(&P, 0x33); EmitByte(&P, 0xD2); } // XOR EDX, EDX
-        else     { EmitRexW(&P); EmitByte(&P, 0x31); EmitByte(&P, 0xD2); }  // XOR RDX, RDX
+        // PAUTH / other: pointer signing and tag insertion have no effect
+        // on the raw pointers the DBT uses.
+        DBG((DEBUG_INFO, "DBT_ASM:    PAUTH (no-op) X%d, X%d\n", Rd, RnU));
+        EmitNop(&P);
+        return (UINTN)(P - X86Buf);
       }
-      if (IsW) { EmitByte(&P, 0xF7); EmitByte(&P, 0xF1); }   // DIV/IDIV ECX
-      else     { EmitRexW(&P); EmitByte(&P, 0xF7); EmitByte(&P, 0xF9); }    // DIV/IDIV RCX
-
-      if (Rd != 31) EmitStoreRax(&P, ArmRegXOff(Rd));
-      EmitNop(&P);
-      return (UINTN)(P - X86Buf);
     } else if (Sub == 0xD8) {
       //
       // Data processing — 3-source (MADD/MSUB/MUL/MNEG).
