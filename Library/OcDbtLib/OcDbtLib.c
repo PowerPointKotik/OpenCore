@@ -3108,9 +3108,9 @@ VOID DbtTraceBlock (VOID) {
     gDbtRunSteps++;
     if ((gDbtRunSeq % gDbtRunDiv) == 0) {
       gDbtRunLines++;
-      DBG((DEBUG_INFO, "DBT_RUN: pc=0x%llx lr=0x%llx x0=0x%llx x22=0x%llx\n",
+      DBG((DEBUG_INFO, "DBT_RUN: pc=0x%llx lr=0x%llx x0=0x%llx x2=0x%llx\n",
            gDbtTracePc, gDbtActiveState->X[30],
-           gDbtActiveState->X[0], gDbtActiveState->X[22]));
+           gDbtActiveState->X[0], gDbtActiveState->X[2]));
       if ((gDbtRunLines & 15) == 0) {
         DbtDumpState ("RT", gDbtActiveState);
       }
