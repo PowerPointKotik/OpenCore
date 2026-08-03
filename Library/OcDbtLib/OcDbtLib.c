@@ -2947,8 +2947,10 @@ UINT64 DbtTranslateVaToPa (DBT_CONTEXT *Ctx, UINT64 Va) {
   //
   if ((Va >> 48) == 0x2BAD) {
     Va = (Va & 0xFFFFFFFFFFFFull) | 0xFFFF000000000000ull;
-    DBG((DEBUG_INFO, "DBT_MMU: tagged ptr 0x%llx -> kernel 0x%llx\n",
-         gDbtHelperVa, Va));
+    if (gDbtTraceEnabled) {
+      DBG((DEBUG_INFO, "DBT_MMU: tagged ptr 0x%llx -> kernel 0x%llx\n",
+           gDbtHelperVa, Va));
+    }
   }
 
   if (Ctx != NULL) {
@@ -2971,15 +2973,25 @@ UINT64 DbtTranslateVaToPa (DBT_CONTEXT *Ctx, UINT64 Va) {
       if (Ctx->PhysWinBuffer[W] != NULL
           && Va >= Ctx->PhysWinBase[W]
           && Va < Ctx->PhysWinBase[W] + Ctx->PhysWinSize[W]) {
-        DBG((DEBUG_INFO, "DBT_MMU: VA 0x%llx phys window[%u] -> host 0x%llx\n",
-             Va, W,
-             (UINT64)(UINTN)(Ctx->PhysWinBuffer[W] + (UINTN)(Va - Ctx->PhysWinBase[W]))));
+        if (gDbtTraceEnabled) {
+          DBG((DEBUG_INFO, "DBT_MMU: VA 0x%llx phys window[%u] -> host 0x%llx\n",
+               Va, W,
+               (UINT64)(UINTN)(Ctx->PhysWinBuffer[W] + (UINTN)(Va - Ctx->PhysWinBase[W]))));
+        }
         return (UINT64)(UINTN)(Ctx->PhysWinBuffer[W] + (UINTN)(Va - Ctx->PhysWinBase[W]));
       }
     }
   }
 
-  DBG((DEBUG_WARN, "DBT_MMU: VA 0x%llx outside image — identity\n", Va));
+  //
+  // Fresh-block gate: the identity fallback fires on every cached-loop
+  // memory access (console writes, state reads), which drowned the log at
+  // ~3-5 lines per putchar.  Log it only when tracing a fresh block; the
+  // DBT_UART console capture (DbtTraceMemSt) is separate and stays on.
+  //
+  if (gDbtTraceEnabled) {
+    DBG((DEBUG_WARN, "DBT_MMU: VA 0x%llx outside image — identity\n", Va));
+  }
   return Va;
 }
 

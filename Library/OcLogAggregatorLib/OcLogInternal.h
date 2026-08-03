@@ -28,7 +28,7 @@
 // batched (OC_LOG_FILE_FLUSH_THRESHOLD below) — so a larger buffer only
 // extends the capture at no boot-speed cost.
 //
-#define OC_LOG_BUFFER_SIZE            BASE_1MB
+#define OC_LOG_BUFFER_SIZE            BASE_2MB
 #define OC_LOG_LINE_BUFFER_SIZE       BASE_1KB
 #define OC_LOG_NVRAM_BUFFER_SIZE      BASE_32KB
 #define OC_LOG_FILE_PATH_BUFFER_SIZE  256
