@@ -2443,10 +2443,18 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
     //
     if (Opc <= 2) {
       INT32  Imm9 = ((INT32)((Inst >> 12) & 0x1FF)) << 23 >> 23;
-      UINT32 IsPost = (Inst >> 11) & 1;
+      UINT32 IsPre   = (Inst >> 11) & 1;   // W bit: 1 = pre-index, 0 = post-index
       CONST CHAR8 *Name = Opc == 1 ? "LDR" : Opc == 0 ? "STR" : "LDRS";
 
-      if ((Inst >> 23) & 1) {
+      //
+      // LDUR/STUR (bits[23:22] = 00) vs LDR/STR imm9 pre/post-index
+      // (bits[23:22] = 01) are told apart by bit 22, NOT bit 23: the
+      // indexed forms must write back Rn += Imm9, which the LDUR path
+      // never did — kvprintf's format pointer (x22) therefore never
+      // advanced past a conversion and each %-spec char was re-read as a
+      // literal by the main loop.
+      //
+      if ((Inst >> 22) & 1) {
         //
         // pre/post index.  Note: bit 11 (W) is 1 for PRE-index and 0 for
         // POST-index on ARM; the code below names the paths accordingly.
@@ -2455,9 +2463,9 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
         //
         DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, [X%d, #%d]%s\n", Name,
              Size == 0 ? "B" : Size == 1 ? "H" : Size == 2 ? "W" : "",
-             Rt, Rn, Imm9, IsPost ? "!" : ""));
+             Rt, Rn, Imm9, IsPre ? "!" : ""));
         EmitLoadRcx(&P, RnOffL);
-        if (IsPost) {
+        if (IsPre) {
           // pre-index (W=1): access [Rn+Imm9], then writeback
           if (Imm9) { EmitAddRcxImm(&P, (UINT32)Imm9); }
         }
