@@ -21,14 +21,12 @@
 #include <Protocol/DataHub.h>
 
 //
-// 1 MB log buffer: the capture file is capped at the buffer size, and the
-// 256 KB version only covered ~3.5 minutes of the DBT boot (the kernel was
-// still running, mid-message).  The earlier 32 MB attempt was blamed for
-// slow boots, but that slowness came from per-line FAT Write+Flush — now
-// batched (OC_LOG_FILE_FLUSH_THRESHOLD below) — so a larger buffer only
-// extends the capture at no boot-speed cost.
+// 512 KB log buffer: lines are now appended with '\n' (no NUL padding), so
+// the file is compact, readable and fast to write.  Bigger would cover more
+// boot but the 2 MB attempt filled the same ~300 s of DBT boot while the
+// FAT writes got heavy.
 //
-#define OC_LOG_BUFFER_SIZE            BASE_2MB
+#define OC_LOG_BUFFER_SIZE            BASE_512KB
 #define OC_LOG_LINE_BUFFER_SIZE       BASE_1KB
 #define OC_LOG_NVRAM_BUFFER_SIZE      BASE_32KB
 #define OC_LOG_FILE_PATH_BUFFER_SIZE  256

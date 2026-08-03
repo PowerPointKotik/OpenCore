@@ -383,14 +383,21 @@ InternalLogAddEntry (
     }
 
     //
-    // Write to internal buffer.
+    // Write to internal buffer.  AsciiStrCatS leaves a NUL after every
+    // line, which made the file ~96% NUL padding (huge, slow FAT writes,
+    // unreadable without stripping).  Append manually with '\n' instead —
+    // the file then contains plain CRLF-free lines.
     //
-    Status = AsciiStrCatS (Private->AsciiBuffer, Private->AsciiBufferSize, Private->TimingTxt);
-    if (!EFI_ERROR (Status)) {
-      Private->AsciiBufferWrittenOffset += AsciiStrLen (Private->TimingTxt);
-      Status                             = AsciiStrCatS (Private->AsciiBuffer, Private->AsciiBufferSize, Private->LineBuffer);
-      if (!EFI_ERROR (Status)) {
-        Private->AsciiBufferWrittenOffset += AsciiStrLen (Private->LineBuffer);
+    {
+      UINTN TimLen = AsciiStrLen (Private->TimingTxt);
+      UINTN LinLen = AsciiStrLen (Private->LineBuffer);
+
+      if (Private->AsciiBufferWrittenOffset + TimLen + LinLen + 2 < Private->AsciiBufferSize) {
+        CopyMem (&Private->AsciiBuffer[Private->AsciiBufferWrittenOffset], Private->TimingTxt, TimLen);
+        Private->AsciiBufferWrittenOffset += TimLen;
+        CopyMem (&Private->AsciiBuffer[Private->AsciiBufferWrittenOffset], Private->LineBuffer, LinLen);
+        Private->AsciiBufferWrittenOffset += LinLen;
+        Private->AsciiBuffer[Private->AsciiBufferWrittenOffset++] = '\n';
       }
     }
 

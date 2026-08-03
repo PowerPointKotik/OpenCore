@@ -29,9 +29,21 @@
   #define DBT_ASM_BUDGET  300
   STATIC UINT32 gDbtAsmBudget = DBT_ASM_BUDGET;
   #define DBG_ASM(...)  do { if (gDbtAsmBudget > 0) { gDbtAsmBudget--; DEBUG (__VA_ARGS__); } } while (0)
+  //
+  // Fine-grained detail (per-access DBT_MEM/SYS/MMU, register dumps, kvprintf
+  // dispatch spies): off by default so the log stays small and the boot
+  // stays fast — the essentials (DBT_RUN/DBT_BLK/DBT_KPR) are always on.
+  //
+  #define DBT_DETAIL  0
+  #if DBT_DETAIL
+    #define DBG_D(...)  DEBUG (__VA_ARGS__)
+  #else
+    #define DBG_D(...)
+  #endif
 #else
   #define DBG(...)
   #define DBG_ASM(...)
+  #define DBG_D(...)
 #endif
 
 //
@@ -2222,19 +2234,19 @@ STATIC UINTN DbtTranslateOne (
 
         if (Op0 == 3 && Op1 == 0 && CRn == 2 && CRm == 0) {
           // TTBR0_EL1 — page table base
-          DBG((DEBUG_INFO, "DBT_MMU:  MSR TTBR0_EL1 <- X%d\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_MMU:  MSR TTBR0_EL1 <- X%d\n", Rt));
           EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, TTBR0_EL1));
         } else if (Op0 == 3 && Op1 == 0 && CRn == 2 && CRm == 1) {
-          DBG((DEBUG_INFO, "DBT_MMU:  MSR TTBR1_EL1 <- X%d\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_MMU:  MSR TTBR1_EL1 <- X%d\n", Rt));
           EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, TTBR1_EL1));
         } else if (Op0 == 3 && Op1 == 0 && CRn == 1 && CRm == 0) {
-          DBG((DEBUG_INFO, "DBT_MMU:  MSR SCTLR_EL1 <- X%d\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_MMU:  MSR SCTLR_EL1 <- X%d\n", Rt));
           EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, SCTLR_EL1));
         } else if (Op0 == 3 && Op1 == 0 && CRn == 2 && CRm == 0 && Op2 == 2) {
-          DBG((DEBUG_INFO, "DBT_MMU:  MSR TCR_EL1 <- X%d\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_MMU:  MSR TCR_EL1 <- X%d\n", Rt));
           EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, TCR_EL1));
         } else if (Op0 == 3 && Op1 == 0 && CRn == 10 && CRm == 2) {
-          DBG((DEBUG_INFO, "DBT_MMU:  MSR MAIR_EL1 <- X%d\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_MMU:  MSR MAIR_EL1 <- X%d\n", Rt));
           EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, MAIR_EL1));
         } else if (Op0 == 3 && Op1 == 0 && CRn == 12 && CRm == 0) {
           DBG((DEBUG_INFO, "DBT_EXC: MSR VBAR_EL1 <- X%d (exception vector base)\n", Rt));
@@ -2252,7 +2264,7 @@ STATIC UINTN DbtTranslateOne (
           DBG((DEBUG_INFO, "DBT_SIMD: MSR CPACR_EL1 <- X%d (FP/SIMD enable)\n", Rt));
           EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, CPACR_EL1));
         } else {
-          DBG((DEBUG_INFO, "DBT_SYS:  MSR unknown (o0=%d o1=%d crn=%d crm=%d o2=%d)\n", Op0, Op1, CRn, CRm, Op2));
+          DBG_D((DEBUG_INFO, "DBT_SYS:  MSR unknown (o0=%d o1=%d crn=%d crm=%d o2=%d)\n", Op0, Op1, CRn, CRm, Op2));
           EmitNop(&P);
         }
         if (DBT_VERBOSE) {
@@ -2268,37 +2280,37 @@ STATIC UINTN DbtTranslateOne (
 
         if (Op0 == 3 && Op1 == 0 && CRn == 0 && CRm == 0 && Op2 == 0) {
           Off = OFFSET_OF(DBT_ARM64_STATE, MIDR_EL1);
-          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, MIDR_EL1\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_SYS:  MRS X%d, MIDR_EL1\n", Rt));
         } else if (Op0 == 3 && Op1 == 0 && CRn == 0 && CRm == 0 && Op2 == 5) {
           Off = OFFSET_OF(DBT_ARM64_STATE, MPIDR_EL1);
-          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, MPIDR_EL1\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_SYS:  MRS X%d, MPIDR_EL1\n", Rt));
         } else if (Op0 == 3 && Op1 == 0 && CRn == 1 && CRm == 0) {
           Off = OFFSET_OF(DBT_ARM64_STATE, SCTLR_EL1);
-          DBG((DEBUG_INFO, "DBT_MMU:  MRS X%d, SCTLR_EL1\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_MMU:  MRS X%d, SCTLR_EL1\n", Rt));
         } else if (Op0 == 3 && Op1 == 0 && CRn == 2 && CRm == 0) {
           Off = OFFSET_OF(DBT_ARM64_STATE, TTBR0_EL1);
-          DBG((DEBUG_INFO, "DBT_MMU:  MRS X%d, TTBR0_EL1\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_MMU:  MRS X%d, TTBR0_EL1\n", Rt));
         } else if (Op0 == 3 && Op1 == 0 && CRn == 2 && CRm == 1) {
           Off = OFFSET_OF(DBT_ARM64_STATE, TTBR1_EL1);
-          DBG((DEBUG_INFO, "DBT_MMU:  MRS X%d, TTBR1_EL1\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_MMU:  MRS X%d, TTBR1_EL1\n", Rt));
         } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 0 && Op2 == 0) {
           Off = OFFSET_OF(DBT_ARM64_STATE, CNTFRQ_EL0);
-          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTFRQ_EL0\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTFRQ_EL0\n", Rt));
         } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 0 && Op2 == 2) {
           Off = OFFSET_OF(DBT_ARM64_STATE, CNTVCT_EL0);
-          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTVCT_EL0\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTVCT_EL0\n", Rt));
         } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 3 && Op2 == 2) {
-          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTV_CVAL_EL0\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTV_CVAL_EL0\n", Rt));
           Off = OFFSET_OF(DBT_ARM64_STATE, CNTV_CVAL_EL0);
         } else if (Op0 == 3 && Op1 == 3 && CRn == 14 && CRm == 3 && Op2 == 1) {
-          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTV_CTL_EL0\n", Rt));
+          DBG_D((DEBUG_INFO, "DBT_SYS:  MRS X%d, CNTV_CTL_EL0\n", Rt));
           Off = OFFSET_OF(DBT_ARM64_STATE, CNTV_CTL_EL0);
         } else if (Op0 == 3 && Op1 == 0 && CRn == 12 && CRm == 0) {
           Off = OFFSET_OF(DBT_ARM64_STATE, VBAR_EL1);
           DBG((DEBUG_INFO, "DBT_EXC: MRS X%d, VBAR_EL1\n", Rt));
         } else {
           Known = FALSE;
-          DBG((DEBUG_INFO, "DBT_SYS:  MRS X%d, unknown sysreg (key=0x%x)\n", Rt, Key));
+          DBG_D((DEBUG_INFO, "DBT_SYS:  MRS X%d, unknown sysreg (key=0x%x)\n", Rt, Key));
           EmitNop(&P);
         }
 
@@ -2942,7 +2954,7 @@ UINT64 DbtTranslateVaToPa (DBT_CONTEXT *Ctx, UINT64 Va) {
   if ((Va >> 48) == 0x2BAD) {
     Va = (Va & 0xFFFFFFFFFFFFull) | 0xFFFF000000000000ull;
     if (gDbtTraceEnabled) {
-      DBG((DEBUG_INFO, "DBT_MMU: tagged ptr 0x%llx -> kernel 0x%llx\n",
+      DBG_D((DEBUG_INFO, "DBT_MMU: tagged ptr 0x%llx -> kernel 0x%llx\n",
            gDbtHelperVa, Va));
     }
   }
@@ -2968,7 +2980,7 @@ UINT64 DbtTranslateVaToPa (DBT_CONTEXT *Ctx, UINT64 Va) {
           && Va >= Ctx->PhysWinBase[W]
           && Va < Ctx->PhysWinBase[W] + Ctx->PhysWinSize[W]) {
         if (gDbtTraceEnabled) {
-          DBG((DEBUG_INFO, "DBT_MMU: VA 0x%llx phys window[%u] -> host 0x%llx\n",
+          DBG_D((DEBUG_INFO, "DBT_MMU: VA 0x%llx phys window[%u] -> host 0x%llx\n",
                Va, W,
                (UINT64)(UINTN)(Ctx->PhysWinBuffer[W] + (UINTN)(Va - Ctx->PhysWinBase[W]))));
         }
@@ -2984,7 +2996,7 @@ UINT64 DbtTranslateVaToPa (DBT_CONTEXT *Ctx, UINT64 Va) {
   // DBT_UART console capture (DbtTraceMemSt) is separate and stays on.
   //
   if (gDbtTraceEnabled) {
-    DBG((DEBUG_WARN, "DBT_MMU: VA 0x%llx outside image — identity\n", Va));
+    DBG_D((DEBUG_WARN, "DBT_MMU: VA 0x%llx outside image — identity\n", Va));
   }
   return Va;
 }
@@ -3002,7 +3014,7 @@ EFI_STATUS DbtSetPhysWindow (DBT_CONTEXT *Ctx, UINT64 Base, UINTN Size, VOID *Bu
   Ctx->PhysWinBuffer[Ctx->PhysWinCount] = (UINT8 *)Buffer;
   Ctx->PhysWinCount++;
 
-  DBG((DEBUG_INFO, "DBT_MMU: phys window[%u] base=0x%llx sz=0x%x host=%p\n",
+  DBG_D((DEBUG_INFO, "DBT_MMU: phys window[%u] base=0x%llx sz=0x%x host=%p\n",
        Ctx->PhysWinCount - 1, Base, (UINT32)Size, Buffer));
   return EFI_SUCCESS;
 }
@@ -3019,10 +3031,10 @@ EFI_STATUS DbtSetSegments (DBT_CONTEXT *Ctx, UINTN SegCount, UINT64 *SegVmAddr,
   Ctx->SegFileOff   = SegFileOff;
   Ctx->KernelBuffer = KernelBuffer;
 
-  DBG((DEBUG_INFO, "DBT_MMU: registered %u segments, kernel buffer 0x%llx\n",
+  DBG_D((DEBUG_INFO, "DBT_MMU: registered %u segments, kernel buffer 0x%llx\n",
        SegCount, (UINT64)(UINTN)KernelBuffer));
   for (UINTN I = 0; I < SegCount; I++) {
-    DBG((DEBUG_INFO, "DBT_MMU: seg[%u] va=0x%llx sz=0x%llx off=0x%llx\n",
+    DBG_D((DEBUG_INFO, "DBT_MMU: seg[%u] va=0x%llx sz=0x%llx off=0x%llx\n",
          I, SegVmAddr[I], SegVmSize[I], SegFileOff[I]));
   }
   return EFI_SUCCESS;
@@ -3089,9 +3101,11 @@ VOID DbtTraceBlock (VOID) {
       DBG((DEBUG_INFO, "DBT_RUN: pc=0x%llx lr=0x%llx x0=0x%llx x2=0x%llx\n",
            gDbtTracePc, gDbtActiveState->X[30],
            gDbtActiveState->X[0], gDbtActiveState->X[2]));
+#if DBT_DETAIL
       if ((gDbtRunLines & 15) == 0) {
         DbtDumpState ("RT", gDbtActiveState);
       }
+#endif
     }
     if (gDbtRunSteps >= DBT_RUN_ADAPT_AFTER) {
       if (gDbtRunLines > DBT_RUN_MAX_LINES) {
@@ -3113,14 +3127,14 @@ VOID DbtTraceBlock (VOID) {
   //
   if (gDbtActiveState != NULL) {
     if (gDbtTracePc == 0xFFFFFE000BBEFB18ull) {
-      DBG((DEBUG_INFO, "DBT_ENT: x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx\n",
+      DBG_D((DEBUG_INFO, "DBT_ENT: x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx\n",
            gDbtActiveState->X[0], gDbtActiveState->X[1],
            gDbtActiveState->X[2], gDbtActiveState->X[3]));
-      DBG((DEBUG_INFO, "DBT_ENT: x19=0x%llx x20=0x%llx x21=0x%llx lr=0x%llx\n",
+      DBG_D((DEBUG_INFO, "DBT_ENT: x19=0x%llx x20=0x%llx x21=0x%llx lr=0x%llx\n",
            gDbtActiveState->X[19], gDbtActiveState->X[20],
            gDbtActiveState->X[21], gDbtActiveState->X[30]));
     } else if (gDbtTracePc == 0xFFFFFE000BBF0858ull) {
-      DBG((DEBUG_INFO, "DBT_EXT: x21=0x%llx x23=0x%llx x0=0x%llx lr=0x%llx\n",
+      DBG_D((DEBUG_INFO, "DBT_EXT: x21=0x%llx x23=0x%llx x0=0x%llx lr=0x%llx\n",
            gDbtActiveState->X[21], gDbtActiveState->X[23],
            gDbtActiveState->X[0], gDbtActiveState->X[30]));
     }
@@ -3135,7 +3149,7 @@ VOID DbtTraceBlock (VOID) {
   if (gDbtActiveState != NULL &&
       (gDbtTracePc >= 0xFFFFFE000BBEFDE0ull) &&
       (gDbtTracePc <= 0xFFFFFE000BBEFE40ull)) {
-    DBG((DEBUG_INFO, "DBT_DSP: pc=0x%llx w12=0x%llx w16=0x%llx x22=0x%llx fmt=0x%llx\n",
+    DBG_D((DEBUG_INFO, "DBT_DSP: pc=0x%llx w12=0x%llx w16=0x%llx x22=0x%llx fmt=0x%llx\n",
          gDbtTracePc, gDbtActiveState->X[12] & 0xFFFFFFFF,
          gDbtActiveState->X[16] & 0xFFFFFFFF,
          gDbtActiveState->X[22], gDbtActiveState->X[0]));
@@ -3209,7 +3223,7 @@ VOID DbtTraceMemSt (VOID) {
   }
 
   if (!gDbtTraceEnabled) return;
-  DBG((DEBUG_INFO, "DBT_MEM: ST size=%u va=0x%llx val=0x%llx%s\n",
+  DBG_D((DEBUG_INFO, "DBT_MEM: ST size=%u va=0x%llx val=0x%llx%s\n",
        (1u << gDbtTraceSize) >> 1, Va, Val, DbtVaInImage(Va) ? "" : " MMIO"));
 }
 
@@ -3231,14 +3245,14 @@ VOID DbtTraceMemLd (VOID) {
   }
 
   if (!DBT_VERBOSE || !gDbtTraceEnabled) return;
-  DBG((DEBUG_INFO, "DBT_MEM: LD size=%u va=0x%llx val=0x%llx%s\n",
+  DBG_D((DEBUG_INFO, "DBT_MEM: LD size=%u va=0x%llx val=0x%llx%s\n",
        (1u << gDbtTraceSize) >> 1, gDbtTraceVa, gDbtTraceVal,
        DbtVaInImage(gDbtTraceVa) ? "" : " MMIO"));
 }
 
 VOID DbtTraceSys (VOID) {
   if (!DBT_VERBOSE || !gDbtTraceEnabled) return;
-  DBG((DEBUG_INFO, "DBT_SYS: key=0x%llx val=0x%llx\n", gDbtTraceSys, gDbtTraceVal));
+  DBG_D((DEBUG_INFO, "DBT_SYS: key=0x%llx val=0x%llx\n", gDbtTraceSys, gDbtTraceVal));
 }
 
 /**
