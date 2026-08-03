@@ -3150,13 +3150,20 @@ STATIC CHAR8       gDbtKprBuf[DBT_KPR_MAX];
 STATIC UINTN       gDbtKprLen = 0;
 
 STATIC VOID DbtKprFlush (VOID) {
+  CHAR16 Ucs2[DBT_KPR_MAX];
+  UINTN  I;
+
   if (gDbtKprLen == 0) {
     return;
   }
   gDbtKprBuf[gDbtKprLen] = '\0';
   DBG((DEBUG_INFO, "DBT_KPR: %a\n", gDbtKprBuf));
   if (gST != NULL && gST->ConOut != NULL) {
-    gST->ConOut->OutputString (gST->ConOut, gDbtKprBuf);
+    for (I = 0; I < gDbtKprLen; I++) {
+      Ucs2[I] = (CHAR16)(UINT8)gDbtKprBuf[I];
+    }
+    Ucs2[gDbtKprLen] = L'\0';
+    gST->ConOut->OutputString (gST->ConOut, Ucs2);
   }
   gDbtKprLen = 0;
 }
