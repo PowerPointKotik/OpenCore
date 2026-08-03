@@ -178,7 +178,9 @@ VOID   DbtTraceSys     (VOID);
 //
 STATIC VOID EmitMovRcxImm (UINT8 **P, UINT64 Val);
 STATIC VOID EmitCaptureVa (UINT8 **P);
+#if DBT_DETAIL
 STATIC VOID DbtDumpState (IN CONST CHAR8 *Tag, IN DBT_ARM64_STATE *S);
+#endif
 
 //
 // =========== ARM64 instruction decode helpers ===========
@@ -3070,11 +3072,12 @@ STATIC BOOLEAN DbtVaInImage (UINT64 Va) {
 }
 
 //
+#if DBT_DETAIL
 // Compact register dump.  The firmware log capture mangles long lines and
 // drops bytes when many lines are emitted back-to-back (the old 10-line
 // dump came back as "DBT_REG: ETY%8..." garbage), so print only two short
-// lines: PC/SP/LR/PSTATE and the key working registers.  Callers decide
-// whether the dump is gated (first-execution trace) or not (DBT_RUN).
+// lines: PC/SP/LR/PSTATE and the key working registers.  DBT_DETAIL-gated
+// (only used by the RT dump).
 //
 STATIC VOID DbtDumpState (IN CONST CHAR8 *Tag, IN DBT_ARM64_STATE *S) {
   if (S == NULL) return;
@@ -3084,6 +3087,7 @@ STATIC VOID DbtDumpState (IN CONST CHAR8 *Tag, IN DBT_ARM64_STATE *S) {
   DBG((DEBUG_INFO, "DBT_REG: %s x0=0x%llx x2=0x%llx x19=0x%llx x22=0x%llx\n",
        Tag, S->X[0], S->X[2], S->X[19], S->X[22]));
 }
+#endif
 
 VOID DbtTraceBlock (VOID) {
   //
