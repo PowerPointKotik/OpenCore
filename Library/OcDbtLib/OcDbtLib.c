@@ -2720,17 +2720,6 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
   // Copy ARM state into context so translated code can access it
   CopyMem(&Ctx->ArmState, ArmState, sizeof(DBT_ARM64_STATE));
   //
-  // Full ENTRY/EXIT register dumps are expensive (10 lines each) and the
-  // DBT_RUN runtime trace already snapshots state continuously, so dump
-  // them only on every 4th fresh block to keep the 256 KB log usable.
-  //
-  if (gDbtTraceEnabled) {
-    gDbtFreshDumps++;
-    if ((gDbtFreshDumps & 3) == 0) {
-      DbtDumpState ("ENTRY", &Ctx->ArmState);
-    }
-  }
-
   // Deliver the state pointer to the translated prologue (ABI-agnostic)
   gDbtActiveState = &Ctx->ArmState;
   gDbtActiveCtx   = Ctx;
@@ -2774,10 +2763,6 @@ VOID DbtExecute (DBT_CONTEXT *Ctx, DBT_ARM64_STATE *ArmState) {
     }
     ArmState->PC = gDbtSpinPc;
     gDbtSpinPc   = 0;
-  }
-
-  if (gDbtTraceEnabled && ((gDbtFreshDumps & 3) == 0)) {
-    DbtDumpState ("EXIT", ArmState);
   }
 }
 
@@ -3064,35 +3049,19 @@ STATIC BOOLEAN DbtVaInImage (UINT64 Va) {
 }
 
 //
-// Full register dump.  Lines are kept short — the firmware log capture
-// drops bytes on long lines (observed: 100+ byte DBT lines come back
-// mangled), so four registers per line, ~60 chars each.  Callers decide
-// whether the dump is gated (first-execution trace, ENTRY/EXIT) or not
-// (DBT_RUN runtime trace).
+// Compact register dump.  The firmware log capture mangles long lines and
+// drops bytes when many lines are emitted back-to-back (the old 10-line
+// dump came back as "DBT_REG: ETY%8..." garbage), so print only two short
+// lines: PC/SP/LR/PSTATE and the key working registers.  Callers decide
+// whether the dump is gated (first-execution trace) or not (DBT_RUN).
 //
 STATIC VOID DbtDumpState (IN CONST CHAR8 *Tag, IN DBT_ARM64_STATE *S) {
   if (S == NULL) return;
 
-  DBG((DEBUG_INFO, "DBT_REG: %s pc=0x%llx sp=0x%llx pst=0x%llx\n",
-       Tag, S->PC, S->SP, S->PSTATE));
-  DBG((DEBUG_INFO, "DBT_REG: %s x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx\n",
-       Tag, S->X[0], S->X[1], S->X[2], S->X[3]));
-  DBG((DEBUG_INFO, "DBT_REG: %s x4=0x%llx x5=0x%llx x6=0x%llx x7=0x%llx\n",
-       Tag, S->X[4], S->X[5], S->X[6], S->X[7]));
-  DBG((DEBUG_INFO, "DBT_REG: %s x8=0x%llx x9=0x%llx x10=0x%llx x11=0x%llx\n",
-       Tag, S->X[8], S->X[9], S->X[10], S->X[11]));
-  DBG((DEBUG_INFO, "DBT_REG: %s x12=0x%llx x13=0x%llx x14=0x%llx x15=0x%llx\n",
-       Tag, S->X[12], S->X[13], S->X[14], S->X[15]));
-  DBG((DEBUG_INFO, "DBT_REG: %s x16=0x%llx x17=0x%llx x18=0x%llx x19=0x%llx\n",
-       Tag, S->X[16], S->X[17], S->X[18], S->X[19]));
-  DBG((DEBUG_INFO, "DBT_REG: %s x20=0x%llx x21=0x%llx x22=0x%llx x23=0x%llx\n",
-       Tag, S->X[20], S->X[21], S->X[22], S->X[23]));
-  DBG((DEBUG_INFO, "DBT_REG: %s x24=0x%llx x25=0x%llx x26=0x%llx x27=0x%llx\n",
-       Tag, S->X[24], S->X[25], S->X[26], S->X[27]));
-  DBG((DEBUG_INFO, "DBT_REG: %s x28=0x%llx fp=0x%llx lr=0x%llx sp0=0x%llx\n",
-       Tag, S->X[28], S->X[29], S->X[30], S->SP_EL0));
-  DBG((DEBUG_INFO, "DBT_REG: %s sctlr=0x%llx ttbr0=0x%llx tcr=0x%llx\n",
-       Tag, S->SCTLR_EL1, S->TTBR0_EL1, S->TCR_EL1));
+  DBG((DEBUG_INFO, "DBT_REG: %s pc=0x%llx sp=0x%llx lr=0x%llx pst=0x%x\n",
+       Tag, S->PC, S->SP, S->X[30], (UINT32)S->PSTATE));
+  DBG((DEBUG_INFO, "DBT_REG: %s x0=0x%llx x2=0x%llx x19=0x%llx x22=0x%llx\n",
+       Tag, S->X[0], S->X[2], S->X[19], S->X[22]));
 }
 
 VOID DbtTraceBlock (VOID) {
@@ -3168,6 +3137,17 @@ VOID DbtTraceBlock (VOID) {
        gDbtTracePc, gDbtActiveState->X[0], gDbtActiveState->X[30]));
 }
 
+//
+// Kernel console line buffer: byte stores outside the image are the kernel's
+// own UART/console writes (the "verbose boot" output).  Accumulate them into
+// a line and emit DBT_KPR: <text> once per console line, so the kernel's
+// messages read like a Hackintosh -v terminal instead of one 30-char log
+// line per byte (which also flooded the capture).
+//
+#define DBT_KPR_MAX  128
+STATIC CHAR8       gDbtKprBuf[DBT_KPR_MAX];
+STATIC UINTN       gDbtKprLen = 0;
+
 VOID DbtTraceMemSt (VOID) {
   UINT64 Va, Val;
 
@@ -3177,15 +3157,26 @@ VOID DbtTraceMemSt (VOID) {
 
   //
   // Kernel console capture: byte-wide stores outside the kernel image are
-  // MMIO writes (e.g. UART TX).  Render them as characters so kernel
-  // printk output shows up verbatim in the OpenCore log.  Never gated —
-  // the console must not be silenced by the fresh-block trace gate.
+  // MMIO writes (e.g. UART TX).  Never gated — the console must not be
+  // silenced by the fresh-block trace gate.
   //
   if (gDbtTraceSize == 0 && !DbtVaInImage(Va)) {
     CHAR8 Ch = (CHAR8)(Val & 0xFF);
-    DBG((DEBUG_INFO, "DBT_UART: [0x%llx] -> '%c' (0x%02x)%s\n",
-         Va, (Ch >= 0x20 && Ch < 0x7F) ? Ch : '.', (UINT8)Ch,
-         (Ch >= 0x20 && Ch < 0x7F) ? "" : " non-printable"));
+
+    if (Ch == '\r') {
+      return;
+    }
+    if (Ch == '\n' || gDbtKprLen >= DBT_KPR_MAX - 1) {
+      gDbtKprBuf[gDbtKprLen] = '\0';
+      DBG((DEBUG_INFO, "DBT_KPR: %a\n", gDbtKprBuf));
+      gDbtKprLen = 0;
+      return;
+    }
+    if (Ch >= 0x20 && Ch < 0x7F) {
+      gDbtKprBuf[gDbtKprLen++] = Ch;
+    } else {
+      gDbtKprBuf[gDbtKprLen++] = '.';
+    }
     return;
   }
 
