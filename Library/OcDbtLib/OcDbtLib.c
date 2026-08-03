@@ -98,7 +98,6 @@ STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|cr
 #define DBT_RUN_MAX_DIV      256    // cap: keep silent chains visible
 
 STATIC BOOLEAN      gDbtTraceEnabled = TRUE;
-STATIC UINT32       gDbtFreshDumps = 0;   // fresh-block counter for ENTRY/EXIT dump thinning
 STATIC UINT64       gDbtRunSeq   = 0;   // total block executions
 STATIC UINT32       gDbtRunDiv   = DBT_RUN_MIN_DIV;
 STATIC UINT32       gDbtRunSteps = 0;   // executions since last adaptation
