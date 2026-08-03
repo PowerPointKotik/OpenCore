@@ -1591,15 +1591,18 @@ STATIC UINTN DbtTranslateOne (
                IsSub ? "SUB" : "ADD", Rd, Rn, Imm, SetFlags ? " (flags)" : ""));
 
       if (Rn == 31) {
-        // From SP or XZR
-        UINTN SrcOff = SpOff;
-        EmitLoadRax(&P, SrcOff);
+        // From SP (64-bit) or XZR (32-bit)
+        if (IsW) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, SpOff); }
         if (IsSub) { EmitSubImm(&P, Imm); }
         else       { EmitAddImm(&P, Imm); }
         if (IsW) EmitTrunc32(&P);
-        if (Rd == 31) {
-          EmitNop(&P); // discard result
-        } else {
+        if ((Rd == 31) && !IsW && !SetFlags) {
+          // 64-bit non-flag form: Rd == 31 is SP — write back.  Without
+          // this 'sub sp, sp, #imm' prologues never moved the stack, every
+          // call frame collapsed onto the same region, and va_arg reads
+          // (and the panic's bit index) came from garbage slots.
+          EmitStoreRax(&P, SpOff);
+        } else if (Rd != 31) {
           EmitStoreRax(&P, RdOff);
         }
         if (SetFlags) EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, 0, FALSE, Imm, 0, 0, IsW);
@@ -1798,7 +1801,12 @@ STATIC UINTN DbtTranslateOne (
           EmitAndRaxRcx(&P);   // ANDS / BICS
         }
         if (IsW) EmitTrunc32(&P);
-        if (Rd != 31) EmitStoreRax(&P, RdOff);
+        if ((Rd == 31) && !IsW && (Opc == 1) && (Rn == 31)) {
+          // MOV SP, Xm alias (ORR X31, XZR, Xm) — write back to SP.
+          EmitStoreRax(&P, SpOff);
+        } else if (Rd != 31) {
+          EmitStoreRax(&P, RdOff);
+        }
         if (Opc == 3) {
           EmitRecordFlagSet(Ctx, FLAGKIND_LOGICAL, FALSE, 0, Rd, Rn, Rm,
                             TRUE, 0, ShiftKind, (UINT8)ShAmt, IsW);
@@ -1820,7 +1828,12 @@ STATIC UINTN DbtTranslateOne (
         if (IsSub) EmitSubRaxRcx(&P);
         else       EmitAddRaxRcx(&P);
         if (IsW) EmitTrunc32(&P);
-        if (Rd != 31) EmitStoreRax(&P, RdOff);
+        if ((Rd == 31) && !IsW && !SetFlags) {
+          // 64-bit non-flag form: Rd == 31 is SP (e.g. add sp, xN, xM).
+          EmitStoreRax(&P, SpOff);
+        } else if (Rd != 31) {
+          EmitStoreRax(&P, RdOff);
+        }
         if (SetFlags) {
           EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, Rm,
                             TRUE, 0, ShiftKind, (UINT8)ShAmt, IsW);
