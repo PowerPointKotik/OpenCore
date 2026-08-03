@@ -2426,7 +2426,7 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
           if (ShAmt) { EmitRexW(&P); EmitByte(&P, 0xC1); EmitByte(&P, 0xE0); EmitByte(&P, ShAmt); }  // SHL RAX, ShAmt
           EmitRexW(&P); EmitByte(&P, 0x01); EmitByte(&P, 0xC1); // ADD RCX, RAX
           EmitCallMapHelper(&P);
-          EmitMemAccess(&P, Size, 2, (Opc == 2), (UINT32)RtOff);
+          EmitMemAccess(&P, Size, Opc, (Opc == 2), (UINT32)RtOff);
           return (UINTN)(P - X86Buf);
         }
         DBG((DEBUG_INFO, "DBT_ASM:    Reg-offset (opc=%d opt=%d) -> NOP\n", Opc, Opt));
@@ -2452,15 +2452,15 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
              Size == 0 ? "B" : Size == 1 ? "H" : Size == 2 ? "W" : "",
              Rt, Rn, Imm9, IsPost ? "!" : ""));
         EmitLoadRcx(&P, RnOffL);
-        if (Imm9) { EmitAddRcxImm(&P, (UINT32)Imm9); }
         if (!IsPost) {
-          // pre-index: Rn = address first
+          // pre-index: address = Rn + Imm9, then write Rn = address
+          if (Imm9) { EmitAddRcxImm(&P, (UINT32)Imm9); }
           EmitStoreRcx(&P, RnOffL);
         }
         EmitCallMapHelper(&P);
         EmitMemAccess(&P, Size, Opc, (Inst >> 31) & 1, (UINT32)RtOff);
         if (IsPost) {
-          // post-index: Rn += Imm9 after the access
+          // post-index: access [Rn], then Rn += Imm9
           EmitLoadRax(&P, RnOffL);
           EmitAddImm(&P, (UINT32)Imm9);
           EmitStoreRax(&P, RnOffL);
