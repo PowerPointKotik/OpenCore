@@ -95,7 +95,7 @@ STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|cr
 #define DBT_RUN_ADAPT_AFTER  256    // executions between adaptation steps
 #define DBT_RUN_MAX_LINES    48     // line budget per adaptation window
 #define DBT_RUN_MIN_DIV      1      // sample every Nth execution
-#define DBT_RUN_MAX_DIV      64     // cap: keep silent chains visible
+#define DBT_RUN_MAX_DIV      256    // cap: keep silent chains visible
 
 STATIC BOOLEAN      gDbtTraceEnabled = TRUE;
 STATIC UINT32       gDbtFreshDumps = 0;   // fresh-block counter for ENTRY/EXIT dump thinning
@@ -2447,24 +2447,26 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
       CONST CHAR8 *Name = Opc == 1 ? "LDR" : Opc == 0 ? "STR" : "LDRS";
 
       if ((Inst >> 23) & 1) {
-        // pre/post index
+        //
+        // pre/post index.  Note: bit 11 (W) is 1 for PRE-index and 0 for
+        // POST-index on ARM; the code below names the paths accordingly.
+        // Both forms write back Rn += Imm9; only the access address differs
+        // (pre: [Rn+Imm9], post: [Rn]).
+        //
         DBG((DEBUG_INFO, "DBT_ASM:    %s%s X%d, [X%d, #%d]%s\n", Name,
              Size == 0 ? "B" : Size == 1 ? "H" : Size == 2 ? "W" : "",
              Rt, Rn, Imm9, IsPost ? "!" : ""));
         EmitLoadRcx(&P, RnOffL);
-        if (!IsPost) {
-          // pre-index: address = Rn + Imm9, then write Rn = address
+        if (IsPost) {
+          // pre-index (W=1): access [Rn+Imm9], then writeback
           if (Imm9) { EmitAddRcxImm(&P, (UINT32)Imm9); }
-          EmitStoreRcx(&P, RnOffL);
         }
         EmitCallMapHelper(&P);
         EmitMemAccess(&P, Size, Opc, (Inst >> 31) & 1, (UINT32)RtOff);
-        if (IsPost) {
-          // post-index: access [Rn], then Rn += Imm9
-          EmitLoadRax(&P, RnOffL);
-          EmitAddImm(&P, (UINT32)Imm9);
-          EmitStoreRax(&P, RnOffL);
-        }
+        // post-index (W=0) accesses [Rn]; both forms write Rn += Imm9
+        EmitLoadRax(&P, RnOffL);
+        EmitAddImm(&P, (UINT32)Imm9);
+        EmitStoreRax(&P, RnOffL);
         return (UINTN)(P - X86Buf);
       } else {
         // LDUR/STUR: unscaled, no writeback
@@ -3076,7 +3078,7 @@ VOID DbtTraceBlock (VOID) {
       DBG((DEBUG_INFO, "DBT_RUN: pc=0x%llx lr=0x%llx x0=0x%llx x22=0x%llx\n",
            gDbtTracePc, gDbtActiveState->X[30],
            gDbtActiveState->X[0], gDbtActiveState->X[22]));
-      if ((gDbtRunLines & 7) == 0) {
+      if ((gDbtRunLines & 15) == 0) {
         DbtDumpState ("RT", gDbtActiveState);
       }
     }
