@@ -20,7 +20,15 @@
 #include <Protocol/OcLog.h>
 #include <Protocol/DataHub.h>
 
-#define OC_LOG_BUFFER_SIZE            BASE_256KB
+//
+// 1 MB log buffer: the capture file is capped at the buffer size, and the
+// 256 KB version only covered ~3.5 minutes of the DBT boot (the kernel was
+// still running, mid-message).  The earlier 32 MB attempt was blamed for
+// slow boots, but that slowness came from per-line FAT Write+Flush — now
+// batched (OC_LOG_FILE_FLUSH_THRESHOLD below) — so a larger buffer only
+// extends the capture at no boot-speed cost.
+//
+#define OC_LOG_BUFFER_SIZE            BASE_1MB
 #define OC_LOG_LINE_BUFFER_SIZE       BASE_1KB
 #define OC_LOG_NVRAM_BUFFER_SIZE      BASE_32KB
 #define OC_LOG_FILE_PATH_BUFFER_SIZE  256
@@ -29,7 +37,7 @@
 // Batch the per-line log file writes: a FAT Write+Flush on every DebugPrint
 // makes DBT-verbose boots crawl (each block emits several lines, each line
 // costs one Write+Flush pair).  Instead flush to the file only once this many
-// bytes have accumulated (or the 256 KB buffer is about to fill).  At a hard
+// bytes have accumulated (or the buffer is about to fill).  At a hard
 // hang the tail up to this threshold stays in RAM and is lost, but a stalled
 // guest repeats identical lines, so the stall remains readable.
 //
