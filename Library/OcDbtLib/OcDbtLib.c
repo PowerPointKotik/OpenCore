@@ -3141,11 +3141,25 @@ VOID DbtTraceBlock (VOID) {
 // own UART/console writes (the "verbose boot" output).  Accumulate them into
 // a line and emit DBT_KPR: <text> once per console line, so the kernel's
 // messages read like a Hackintosh -v terminal instead of one 30-char log
-// line per byte (which also flooded the capture).
+// line per byte (which also flooded the capture).  The line is ALSO pushed
+// to the UEFI console (gST->ConOut) so the kernel output appears on screen
+// like a normal Hackintosh verbose boot, not just in the log file.
 //
 #define DBT_KPR_MAX  128
 STATIC CHAR8       gDbtKprBuf[DBT_KPR_MAX];
 STATIC UINTN       gDbtKprLen = 0;
+
+STATIC VOID DbtKprFlush (VOID) {
+  if (gDbtKprLen == 0) {
+    return;
+  }
+  gDbtKprBuf[gDbtKprLen] = '\0';
+  DBG((DEBUG_INFO, "DBT_KPR: %a\n", gDbtKprBuf));
+  if (gST != NULL && gST->ConOut != NULL) {
+    gST->ConOut->OutputString (gST->ConOut, gDbtKprBuf);
+  }
+  gDbtKprLen = 0;
+}
 
 VOID DbtTraceMemSt (VOID) {
   UINT64 Va, Val;
@@ -3166,9 +3180,7 @@ VOID DbtTraceMemSt (VOID) {
       return;
     }
     if (Ch == '\n' || gDbtKprLen >= DBT_KPR_MAX - 1) {
-      gDbtKprBuf[gDbtKprLen] = '\0';
-      DBG((DEBUG_INFO, "DBT_KPR: %a\n", gDbtKprBuf));
-      gDbtKprLen = 0;
+      DbtKprFlush ();
       return;
     }
     if (Ch >= 0x20 && Ch < 0x7F) {
