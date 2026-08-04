@@ -26,7 +26,7 @@
 // boot but the 2 MB attempt filled the same ~300 s of DBT boot while the
 // FAT writes got heavy.
 //
-#define OC_LOG_BUFFER_SIZE            BASE_512KB
+#define OC_LOG_BUFFER_SIZE            BASE_1MB
 #define OC_LOG_LINE_BUFFER_SIZE       BASE_1KB
 #define OC_LOG_NVRAM_BUFFER_SIZE      BASE_32KB
 #define OC_LOG_FILE_PATH_BUFFER_SIZE  256

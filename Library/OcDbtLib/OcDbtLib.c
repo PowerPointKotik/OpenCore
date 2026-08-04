@@ -34,7 +34,7 @@
   // dispatch spies): off by default so the log stays small and the boot
   // stays fast — the essentials (DBT_RUN/DBT_BLK/DBT_KPR) are always on.
   //
-  #define DBT_DETAIL  0
+  #define DBT_DETAIL  1
   #if DBT_DETAIL
     #define DBG_D(...)  DEBUG (__VA_ARGS__)
   #else
