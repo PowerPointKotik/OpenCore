@@ -117,7 +117,7 @@ STATIC UINT64       gDbtTraceSys  = 0;  // sysreg key (op0<<16|op1<<12|crn<<8|cr
 #define DBT_RUN_ADAPT_AFTER  256    // executions between adaptation steps
 #define DBT_RUN_MAX_LINES    48     // line budget per adaptation window
 #define DBT_RUN_MIN_DIV      1      // sample every Nth execution
-#define DBT_RUN_MAX_DIV      256    // cap: keep silent chains visible
+#define DBT_RUN_MAX_DIV      16     // cap: keep every loop iteration visible
 
 STATIC BOOLEAN      gDbtTraceEnabled = TRUE;
 STATIC UINT64       gDbtRunSeq   = 0;   // total block executions
@@ -1719,6 +1719,38 @@ STATIC UINTN DbtTranslateOne (
       //
       if (Form == 0) {
         Imm = 0;
+      }
+
+      if (Size == 3 && Form <= 3) {
+        //
+        // Q-form (128-bit SIMD) pairs: the DBT does not track SIMD
+        // registers, but the ubiquitous use is 'movi v0.2d, #0' followed by
+        // 'stp q0, q0, [sp, #off]' to zero a buffer — emit the 32 zero bytes
+        // for the store; loads are ignored (no SIMD state to write).
+        //
+        if (!IsLoad) {
+          if (Form == 1) {
+            EmitLoadRcx(&P, RnOffP);
+          } else {
+            EmitLoadRcx(&P, RnOffP);
+            if (Imm) { EmitAddRcxImm(&P, (UINT32)Imm); }
+            if (Form == 3) {
+              EmitStoreRcx(&P, RnOffP);
+            }
+          }
+          EmitCallMapHelper(&P);                   // RAX = host base
+          for (UINT32 QOff = 0; QOff < 32; QOff += 8) {
+            EmitRexW(&P); EmitByte(&P, 0xC7); EmitByte(&P, (UINT8)(0x40 | QOff)); EmitDword(&P, 0);
+          }
+          if (Form == 1) {
+            EmitLoadRax(&P, RnOffP);
+            EmitAddImm(&P, (UINT32)Imm);
+            EmitStoreRax(&P, RnOffP);
+          }
+        } else {
+          EmitNop(&P);
+        }
+        return (UINTN)(P - X86Buf);
       }
 
       if ((Size == 2 || Size == 0) && Form <= 3) {
