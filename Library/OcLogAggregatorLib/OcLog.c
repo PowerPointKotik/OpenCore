@@ -442,12 +442,13 @@ InternalLogAddEntry (
           //
           // Always overwriting file completely is most reliable.
           // It is slow, but fixed size write is more reliable with broken FAT32 driver.
+          // Write only the produced bytes (the rest of the buffer is zero padding).
           //
           OcSetFileData (
             OcLog->FileSystem,
             OcLog->FilePath,
             Private->AsciiBuffer,
-            (UINT32)Private->AsciiBufferSize
+            (UINT32)Private->AsciiBufferWrittenOffset
             );
         }
       }
@@ -784,17 +785,22 @@ OcConfigureLogProtocol (
     }
   }
 
-  if (LogRoot != NULL) {
+      if (LogRoot != NULL) {
     if (!EFI_ERROR (Status)) {
       if (  ((Options & OC_LOG_UNSAFE) == 0)
          && (OC_LOG_PRIVATE_DATA_FROM_OC_LOG_THIS (OcLog)->AsciiBufferSize > 0)
             )
       {
+        //
+        // Write only the produced bytes — the rest of the buffer is
+        // zero-padded pool, and dumping the whole size filled the file
+        // with ~90% NULs.
+        //
         OcSetFileData (
           LogRoot,
           LogPath,
           OC_LOG_PRIVATE_DATA_FROM_OC_LOG_THIS (OcLog)->AsciiBuffer,
-          (UINT32)OC_LOG_PRIVATE_DATA_FROM_OC_LOG_THIS (OcLog)->AsciiBufferSize
+          (UINT32)OC_LOG_PRIVATE_DATA_FROM_OC_LOG_THIS (OcLog)->AsciiBufferWrittenOffset
           );
       }
     } else {
