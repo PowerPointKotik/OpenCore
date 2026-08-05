@@ -2511,48 +2511,50 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
     //
     if (Opc <= 2) {
       INT32  Imm9 = ((INT32)((Inst >> 12) & 0x1FF)) << 23 >> 23;
-      UINT32 IsPre   = (Inst >> 11) & 1;   // W bit: 1 = pre-index, 0 = post-index
       CONST CHAR8 *Name = Opc == 1 ? "LDR" : Opc == 0 ? "STR" : "LDRS";
 
       //
-      // LDUR/STUR (bits[23:22] = 00) vs LDR/STR imm9 pre/post-index
-      // (bits[23:22] = 01) are told apart by bit 22, NOT bit 23: the
-      // indexed forms must write back Rn += Imm9, which the LDUR path
-      // never did — kvprintf's format pointer (x22) therefore never
-      // advanced past a conversion and each %-spec char was re-read as a
-      // literal by the main loop.
+      // imm9 forms: LDUR/STUR (bits[11:10] = 00), post-index (01), pre (11).
+      // Note bits[23:22] are 00 for STUR and 01 for BOTH LDUR and the
+      // indexed forms — the discriminator is bits[11:10], NOT bit 22.  The
+      // canary epilogue 'ldur x8, [x29, #-0x58]' (0xF85A83A8) encodes
+      // bits[23:22]=01 + bits[11:10]=00; routing it by bit 22 into the
+      // indexed path made it read [x29] instead of [x29-0x58], so every
+      // stack-canary compare failed and functions panicked.
       //
-      if ((Inst >> 22) & 1) {
-        //
-        // pre/post index.  Note: bit 11 (W) is 1 for PRE-index and 0 for
-        // POST-index on ARM; the code below names the paths accordingly.
-        // Both forms write back Rn += Imm9; only the access address differs
-        // (pre: [Rn+Imm9], post: [Rn]).
-        //
+      {
+        UINT32 Idx = (Inst >> 10) & 3;   // 00 unscaled, 01 post, 11 pre
+
+        if (Idx == 0) {
+          // LDUR/STUR: unscaled, no writeback
+          DBG_ASM((DEBUG_INFO, "DBT_ASM:    %s%s X%d, [X%d, #%d]\n",
+               Opc == 1 ? "LDUR" : "STUR",
+               Size == 0 ? "B" : Size == 1 ? "H" : Size == 2 ? "W" : "",
+               Rt, Rn, Imm9));
+          EmitLoadRcx(&P, RnOffL);
+          if (Imm9) { EmitAddRcxImm(&P, (UINT32)Imm9); }
+          EmitCallMapHelper(&P);
+          EmitMemAccess(&P, Size, Opc, (Inst >> 31) & 1, (UINT32)RtOff);
+          return (UINTN)(P - X86Buf);
+        }
+
+        // pre/post index: access [Rn+Imm9] (pre) or [Rn] (post); both write
+        // back Rn += Imm9.
+        BOOLEAN IsPre = (Idx == 3);
         DBG_ASM((DEBUG_INFO, "DBT_ASM:    %s%s X%d, [X%d, #%d]%s\n", Name,
              Size == 0 ? "B" : Size == 1 ? "H" : Size == 2 ? "W" : "",
              Rt, Rn, Imm9, IsPre ? "!" : ""));
         EmitLoadRcx(&P, RnOffL);
         if (IsPre) {
-          // pre-index (W=1): access [Rn+Imm9], then writeback
+          // pre-index (bits[11:10]=11): access [Rn+Imm9]
           if (Imm9) { EmitAddRcxImm(&P, (UINT32)Imm9); }
         }
         EmitCallMapHelper(&P);
         EmitMemAccess(&P, Size, Opc, (Inst >> 31) & 1, (UINT32)RtOff);
-        // post-index (W=0) accesses [Rn]; both forms write Rn += Imm9
+        // post-index (bits[11:10]=01) accesses [Rn]; both write Rn += Imm9
         EmitLoadRax(&P, RnOffL);
         EmitAddImm(&P, (UINT32)Imm9);
         EmitStoreRax(&P, RnOffL);
-        return (UINTN)(P - X86Buf);
-      } else {
-        // LDUR/STUR: unscaled, no writeback
-        DBG_ASM((DEBUG_INFO, "DBT_ASM:    LD%s%s X%d, [X%d, #%d]\n",
-             Opc == 1 ? "UR" : "U", Opc == 0 ? "R" : "",
-             Rt, Rn, Imm9));
-        EmitLoadRcx(&P, RnOffL);
-        if (Imm9) { EmitAddRcxImm(&P, (UINT32)Imm9); }
-        EmitCallMapHelper(&P);
-        EmitMemAccess(&P, Size, Opc, (Inst >> 31) & 1, (UINT32)RtOff);
         return (UINTN)(P - X86Buf);
       }
     }
