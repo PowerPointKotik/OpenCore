@@ -68,6 +68,14 @@ STATIC DBT_CONTEXT *gDbtActiveCtx = NULL;
 STATIC UINT64       gDbtHelperVa  = 0;
 
 //
+// Pointer-authentication emulation (see the definitions further below).
+// Declared early: the 0xD6/0xD7 PAUTH decoding and the BR/BLR/RET paths
+// emit calls to these helpers and appear before their definitions.
+//
+UINT64 DbtPacResolve (VOID);
+STATIC VOID EmitPacResolve (UINT8 **P);
+
+//
 // Runtime trace scratch slots.  Translated code stores the guest PC, the
 // effective address of a load/store, the transferred value and the sysreg
 // key into these globals (ABI-agnostically, like gDbtHelperVa) and then
