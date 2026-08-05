@@ -3258,6 +3258,19 @@ VOID DbtTraceMemSt (VOID) {
     return;
   }
 
+  //
+  // Stack canary trace (never gated): see DbtTraceMemLd.  Log stores to the
+  // guest stack area and to the canary global so the prologue store and any
+  // overwrite of the canary slot are visible.
+  //
+  if ((Va >= 0xA4200000ull && Va < 0xA4500000ull) ||
+      (Va == 0xFFFFFE000C993000ull)) {
+    DBG((DEBUG_INFO, "DBT_CAN: ST va=0x%llx val=0x%llx sp=0x%llx pc=0x%llx\n",
+         Va, Val,
+         (gDbtActiveState != NULL) ? gDbtActiveState->SP : 0, gDbtTracePc));
+    return;
+  }
+
   if (!gDbtTraceEnabled) return;
   DBG_D((DEBUG_INFO, "DBT_MEM: ST size=%u va=0x%llx val=0x%llx%s\n",
        (1u << gDbtTraceSize) >> 1, Va, Val, DbtVaInImage(Va) ? "" : " MMIO"));
@@ -3277,6 +3290,20 @@ VOID DbtTraceMemLd (VOID) {
          (INT64)((gDbtTraceVa - 0xFFFFFE000BBF0880ull) >> 2),
          gDbtActiveState->X[16], gDbtActiveState->X[17],
          gDbtActiveState->X[12] & 0xFFFFFFFF));
+    return;
+  }
+
+  //
+  // Stack canary trace (never gated): the kernel's __stack_chk_guard is
+  // 0xC993000 and the canary slot lives in the guest stack area — log every
+  // access there, cached or not, so the prologue store, any overwrite, and
+  // the epilogue compare are all visible.
+  //
+  if ((gDbtTraceVa >= 0xA4200000ull && gDbtTraceVa < 0xA4500000ull) ||
+      (gDbtTraceVa == 0xFFFFFE000C993000ull)) {
+    DBG((DEBUG_INFO, "DBT_CAN: LD va=0x%llx val=0x%llx sp=0x%llx pc=0x%llx\n",
+         gDbtTraceVa, gDbtTraceVal,
+         (gDbtActiveState != NULL) ? gDbtActiveState->SP : 0, gDbtTracePc));
     return;
   }
 
