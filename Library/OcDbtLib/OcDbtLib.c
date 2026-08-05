@@ -2080,13 +2080,60 @@ STATIC UINTN DbtTranslateOne (
         EmitNop(&P);
         return (UINTN)(P - X86Buf);
       } else {
-        // PAUTH / other: pointer signing and tag insertion have no effect
-        // on the raw pointers the DBT uses.
-        DBG_ASM((DEBUG_INFO, "DBT_ASM:    PAUTH (no-op) X%d, X%d\n", Rd, RnU));
-        EmitNop(&P);
-        return (UINTN)(P - X86Buf);
+        //
+        // PAUTH family: pointer signing / authentication.
+        //   bit 16 == 0: variable shifts LSLV/LSRV/ASRV/RORV (Xm = count).
+        //   bit 16 == 1: PACIA/PACIB/PACDA/PACDB (sign — keep low 32) and
+        //     AUTIA/AUTIB/AUTDA/AUTDB (authenticate — resolve the low 32 as
+        //     a file offset (linker-signed) or 0xFFFFFE00_lo (raw pointer)).
+        //   IRG/PACGA/XPACLRI/...: no effect on raw pointers -> NOP.
+        //
+        UINT32 PacOp = (Inst >> 10) & 0x3F;
+
+        if (!((Inst >> 16) & 1)) {
+          // LSLV(0) LSRV(1) ASRV(2) RORV(3)
+          if (PacOp <= 3) {
+            DBG_ASM((DEBUG_INFO, "DBT_ASM:    VSHIFT%s X%d, X%d, X%d\n",
+                     PacOp == 0 ? "L" : PacOp == 1 ? "R" : PacOp == 2 ? "A" : "ROR",
+                     Rd, RnU, (Inst >> 16) & 0x1F));
+            if (RnU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RnU)); }
+            if (IsW) EmitTrunc32(&P);
+            if (Rm == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, ArmRegXOff(Rm)); }
+            EmitByte(&P, 0x48); EmitByte(&P, 0x63); EmitByte(&P, 0xC9);  // MOVSXD RCX, ECX
+            EmitRexW(&P); EmitByte(&P, 0x83); EmitByte(&P, 0xE1); EmitByte(&P, 0x3F);  // AND RCX, 63
+            if (PacOp == 0) { EmitByte(&P, 0x48); EmitByte(&P, 0xD3); EmitByte(&P, 0xE0); }  // SHL RAX, CL
+            else if (PacOp == 1) { EmitByte(&P, 0x48); EmitByte(&P, 0xD3); EmitByte(&P, 0xE8); }  // SHR RAX, CL
+            else if (PacOp == 2) { EmitByte(&P, 0x48); EmitByte(&P, 0xD3); EmitByte(&P, 0xF8); }  // SAR RAX, CL
+            else { EmitRexW(&P); EmitByte(&P, 0xD3); EmitByte(&P, 0xC8); }  // ROR RAX, CL
+            if (IsW) EmitTrunc32(&P);
+            if (Rd != 31) EmitStoreRax(&P, ArmRegXOff(Rd));
+            return (UINTN)(P - X86Buf);
+          }
+          DBG_ASM((DEBUG_INFO, "DBT_ASM:    PAUTH (no-op) X%d, X%d\n", Rd, RnU));
+          EmitNop(&P);
+          return (UINTN)(P - X86Buf);
+        }
+
+        if (PacOp >= 4 && PacOp <= 7) {
+          // AUTIA/AUTIB/AUTDA/AUTDB
+          DBG_ASM((DEBUG_INFO, "DBT_ASM:    AUT (resolve) X%d, X%d\n", Rd, RnU));
+          if (RnU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RnU)); }
+          EmitPacResolve(&P);
+          if (Rd != 31) EmitStoreRax(&P, ArmRegXOff(Rd));
+          return (UINTN)(P - X86Buf);
+        } else if (PacOp <= 3) {
+          // PACIA/PACIB/PACDA/PACDB
+          DBG_ASM((DEBUG_INFO, "DBT_ASM:    PAC (sign) X%d, X%d\n", Rd, RnU));
+          if (RnU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RnU)); }
+          EmitTrunc32(&P);
+          if (Rd != 31) EmitStoreRax(&P, ArmRegXOff(Rd));
+          return (UINTN)(P - X86Buf);
+        } else {
+          DBG_ASM((DEBUG_INFO, "DBT_ASM:    PAUTH (no-op) X%d, X%d\n", Rd, RnU));
+          EmitNop(&P);
+          return (UINTN)(P - X86Buf);
+        }
       }
-    } else if (Sub == 0xD8) {
       //
       // Data processing — 3-source (MADD/MSUB/MUL/MNEG).
       //   [28:21] = 11011000 selects the multiply-add group; sf (bit 31)
@@ -2214,23 +2261,26 @@ STATIC UINTN DbtTranslateOne (
       UINT32 OpcR = (Inst >> 21) & 7;
 
       if (OpcR == 0) {
-        // BR
+        // BR / BRAA (PAC branch — resolve the signed pointer)
         DBG_ASM((DEBUG_INFO, "DBT_ASM:    BR X%d\n", Rn));
         EmitLoadRax(&P, RnOff);
+        EmitPacResolve(&P);
         EmitStoreRax(&P, PcOff);
       } else if (OpcR == 1) {
-        // BLR (call)
+        // BLR / BLRAA (PAC call — resolve the signed pointer)
         DBG_ASM((DEBUG_INFO, "DBT_ASM:    BLR X%d\n", Rn));
         // Save return address (PC+4) to LR (X30)
         EmitMovImm(&P, InstAddr + 4);
         EmitStoreRax(&P, ArmRegXOff(30));
         // Jump to target
         EmitLoadRax(&P, RnOff);
+        EmitPacResolve(&P);
         EmitStoreRax(&P, PcOff);
       } else if (OpcR == 2) {
-        // RET
+        // RET (LR may be PAC-signed after a braa-style call chain)
         DBG_ASM((DEBUG_INFO, "DBT_ASM:    RET X%d\n", Rn));
         EmitLoadRax(&P, RnOff == ArmRegXOff(0) ? ArmRegXOff(30) : RnOff);
+        EmitPacResolve(&P);
         EmitStoreRax(&P, PcOff);
       } else {
         DBG_ASM((DEBUG_INFO, "DBT_ASM:    Unknown branch reg -> NOP\n"));
@@ -3074,6 +3124,50 @@ EFI_STATUS DbtSetSegments (DBT_CONTEXT *Ctx, UINTN SegCount, UINT64 *SegVmAddr,
          I, SegVmAddr[I], SegVmSize[I], SegFileOff[I]));
   }
   return EFI_SUCCESS;
+}
+
+//
+// Host-side PAC (pointer authentication) emulation.  arm64e kernel pointers
+// carry a signature in the upper bits and the address low: for
+// linker-signed pointers (__DATA_CONST tables) the low 32 bits are the
+// FILE OFFSET of the target, for pacia-signed pointers (the raw addresses
+// the DBT keeps, since pacia is a no-op here) the low 32 bits are
+// addr - 0xFFFFFE0000000000.  Resolve: try 0xFFFFFE0000000000|lo first
+// (identity for raw pointers in the image), then lo as a segment file
+// offset, else leave it.
+//
+STATIC UINT64 gDbtPacVal = 0;
+
+UINT64 DbtPacResolve (VOID) {
+  UINT64 Lo = gDbtPacVal & 0xFFFFFFFF;
+  UINT64 Addr = 0xFFFFFE0000000000ull | Lo;
+  DBT_CONTEXT *Ctx = gDbtActiveCtx;
+  UINTN  I;
+
+  if (Ctx != NULL) {
+    for (I = 0; I < Ctx->SegCount; I++) {
+      if (Addr >= Ctx->SegVmAddr[I] && Addr < Ctx->SegVmAddr[I] + Ctx->SegVmSize[I]) {
+        return Addr;
+      }
+    }
+    for (I = 0; I < Ctx->SegCount; I++) {
+      if (Lo >= Ctx->SegFileOff[I] && Lo < Ctx->SegFileOff[I] + Ctx->SegVmSize[I]) {
+        return Ctx->SegVmAddr[I] + (Lo - Ctx->SegFileOff[I]);
+      }
+    }
+  }
+  return Addr;
+}
+
+//
+// Emit:  gDbtPacVal = RAX; RAX = DbtPacResolve()
+//
+STATIC VOID EmitPacResolve (UINT8 **P) {
+  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0xC1);   // MOV RCX, RAX (value)
+  EmitMovImm(P, (UINT64)(UINTN)&gDbtPacVal);
+  EmitRexW(P); EmitByte(P, 0x89); EmitByte(P, 0x08);   // MOV [RAX], RCX
+  EmitMovImm(P, (UINT64)(UINTN)DbtPacResolve);
+  EmitByte(P, 0xFF); EmitByte(P, 0xD0);                 // CALL RAX
 }
 
 //
