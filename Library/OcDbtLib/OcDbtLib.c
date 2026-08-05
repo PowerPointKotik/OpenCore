@@ -3286,6 +3286,8 @@ VOID DbtTraceMemSt (VOID) {
   //
   if ((Va >= 0xA4200000ull && Va < 0xA4500000ull) ||
       (Va == 0xFFFFFE000C993000ull) ||
+      (Va >= 0xFFFFFE0007E28000ull && Va < 0xFFFFFE0007E29000ull) ||
+      (Va >= 0xFFFFFE0007EB5000ull && Va < 0xFFFFFE0007EB6000ull) ||
       ((gDbtTracePc >= 0xFFFFFE000BBEFB18ull) && (gDbtTracePc <= 0xFFFFFE000BBEFB70ull)) ||
       ((gDbtTracePc >= 0xFFFFFE000BBF0840ull) && (gDbtTracePc <= 0xFFFFFE000BBF0860ull))) {
     DBG((DEBUG_INFO, "DBT_CAN: ST va=0x%llx val=0x%llx sp=0x%llx pc=0x%llx\n",
@@ -3326,6 +3328,8 @@ VOID DbtTraceMemLd (VOID) {
   //
   if ((gDbtTraceVa >= 0xA4200000ull && gDbtTraceVa < 0xA4500000ull) ||
       (gDbtTraceVa == 0xFFFFFE000C993000ull) ||
+      (gDbtTraceVa >= 0xFFFFFE0007E28000ull && gDbtTraceVa < 0xFFFFFE0007E29000ull) ||
+      (gDbtTraceVa >= 0xFFFFFE0007EB5000ull && gDbtTraceVa < 0xFFFFFE0007EB6000ull) ||
       ((gDbtTracePc >= 0xFFFFFE000BBEFB18ull) && (gDbtTracePc <= 0xFFFFFE000BBEFB70ull)) ||
       ((gDbtTracePc >= 0xFFFFFE000BBF0840ull) && (gDbtTracePc <= 0xFFFFFE000BBF0860ull))) {
     DBG((DEBUG_INFO, "DBT_CAN: LD va=0x%llx val=0x%llx sp=0x%llx pc=0x%llx\n",
