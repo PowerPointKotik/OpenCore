@@ -3279,10 +3279,13 @@ VOID DbtTraceMemSt (VOID) {
   //
   // Stack canary trace (never gated): see DbtTraceMemLd.  Log stores to the
   // guest stack area and to the canary global so the prologue store and any
-  // overwrite of the canary slot are visible.
+  // overwrite of the canary slot are visible.  Inside the prologue/epilogue
+  // blocks log ANY address to expose a wrong effective address.
   //
   if ((Va >= 0xA4200000ull && Va < 0xA4500000ull) ||
-      (Va == 0xFFFFFE000C993000ull)) {
+      (Va == 0xFFFFFE000C993000ull) ||
+      ((gDbtTracePc >= 0xFFFFFE000BBEFB18ull) && (gDbtTracePc <= 0xFFFFFE000BBEFB70ull)) ||
+      ((gDbtTracePc >= 0xFFFFFE000BBF0840ull) && (gDbtTracePc <= 0xFFFFFE000BBF0860ull))) {
     DBG((DEBUG_INFO, "DBT_CAN: ST va=0x%llx val=0x%llx sp=0x%llx pc=0x%llx\n",
          Va, Val,
          (gDbtActiveState != NULL) ? gDbtActiveState->SP : 0, gDbtTracePc));
@@ -3315,10 +3318,14 @@ VOID DbtTraceMemLd (VOID) {
   // Stack canary trace (never gated): the kernel's __stack_chk_guard is
   // 0xC993000 and the canary slot lives in the guest stack area — log every
   // access there, cached or not, so the prologue store, any overwrite, and
-  // the epilogue compare are all visible.
+  // the epilogue compare are all visible.  Inside the prologue/epilogue
+  // blocks themselves log ANY address so a wrong canary-slot effective
+  // address shows up verbatim.
   //
   if ((gDbtTraceVa >= 0xA4200000ull && gDbtTraceVa < 0xA4500000ull) ||
-      (gDbtTraceVa == 0xFFFFFE000C993000ull)) {
+      (gDbtTraceVa == 0xFFFFFE000C993000ull) ||
+      ((gDbtTracePc >= 0xFFFFFE000BBEFB18ull) && (gDbtTracePc <= 0xFFFFFE000BBEFB70ull)) ||
+      ((gDbtTracePc >= 0xFFFFFE000BBF0840ull) && (gDbtTracePc <= 0xFFFFFE000BBF0860ull))) {
     DBG((DEBUG_INFO, "DBT_CAN: LD va=0x%llx val=0x%llx sp=0x%llx pc=0x%llx\n",
          gDbtTraceVa, gDbtTraceVal,
          (gDbtActiveState != NULL) ? gDbtActiveState->SP : 0, gDbtTracePc));
