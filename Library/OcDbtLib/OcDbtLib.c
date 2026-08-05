@@ -2142,6 +2142,7 @@ STATIC UINTN DbtTranslateOne (
           return (UINTN)(P - X86Buf);
         }
       }
+    } else if (Sub == 0xD8) {
       //
       // Data processing — 3-source (MADD/MSUB/MUL/MNEG).
       //   [28:21] = 11011000 selects the multiply-add group; sf (bit 31)
