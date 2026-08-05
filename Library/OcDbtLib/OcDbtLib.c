@@ -2123,16 +2123,21 @@ STATIC UINTN DbtTranslateOne (
         }
 
         if (PacOp >= 4 && PacOp <= 7) {
-          // AUTIA/AUTIB/AUTDA/AUTDB
+          // AUTIA/AUTIB/AUTDA/AUTDB: Xd = auth(Xd with modifier Xn).  The
+          // signed pointer sits in Xd (e.g. 'ldr x16, [x0,#0xd8]; autda
+          // x16, x17'); Xn is only the modifier, so resolve Xd.
           DBG_ASM((DEBUG_INFO, "DBT_ASM:    AUT (resolve) X%d, X%d\n", Rd, RnU));
-          if (RnU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RnU)); }
+          if (Rd == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(Rd)); }
           EmitPacResolve(&P);
           if (Rd != 31) EmitStoreRax(&P, ArmRegXOff(Rd));
           return (UINTN)(P - X86Buf);
         } else if (PacOp <= 3) {
-          // PACIA/PACIB/PACDA/PACDB
+          // PACIA/PACIB/PACDA/PACDB: Xd = sign(Xd with modifier Xn).
+          // Apple kernels load the pointer into Xd and the modifier into
+          // Xn (e.g. 'adrp x16...; mov x17, #mod; pacia x16, x17'), so the
+          // signed value is the LOW 32 BITS OF Xd, not of Xn.
           DBG_ASM((DEBUG_INFO, "DBT_ASM:    PAC (sign) X%d, X%d\n", Rd, RnU));
-          if (RnU == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(RnU)); }
+          if (Rd == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, ArmRegXOff(Rd)); }
           EmitTrunc32(&P);
           if (Rd != 31) EmitStoreRax(&P, ArmRegXOff(Rd));
           return (UINTN)(P - X86Buf);
