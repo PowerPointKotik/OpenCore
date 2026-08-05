@@ -74,6 +74,7 @@ STATIC UINT64       gDbtHelperVa  = 0;
 //
 UINT64 DbtPacResolve (VOID);
 STATIC VOID EmitPacResolve (UINT8 **P);
+VOID DbtKernelPutc (VOID);
 
 //
 // Runtime trace scratch slots.  Translated code stores the guest PC, the
@@ -1408,6 +1409,23 @@ STATIC UINTN DbtTranslateOne (
   UINT8   Rn  = Arm64Rn(Inst);
   UINT8   Rm  = Arm64Rm(Inst);
   UINT8   Rt  = Arm64Rt(Inst);
+
+  //
+  // Kernel console hook: the early kprintf putchar wrapper
+  // (0xFFFFFE000BBF0E2C) receives the character in X0.  Log it from the
+  // host so the kernel message text shows up even when the emergency
+  // console slots (linker-signed, cannot be authenticated) are in use.
+  // The hook is emitted into the translated block, so it runs on every
+  // entry to this address.
+  //
+  if (InstAddr == 0xFFFFFE000BBF0E2C) {
+    EmitLoadRax(&P, ArmRegXOff(0));
+    EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0xC1);   // MOV RCX, RAX (char)
+    EmitMovImm(&P, (UINT64)(UINTN)&gDbtKputcChar);
+    EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x08);   // MOV [RAX], RCX
+    EmitMovImm(&P, (UINT64)(UINTN)DbtKernelPutc);
+    EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);                 // CALL RAX
+  }
 
   (VOID)BufSize;
 
@@ -3151,6 +3169,14 @@ EFI_STATUS DbtSetSegments (DBT_CONTEXT *Ctx, UINTN SegCount, UINT64 *SegVmAddr,
 // offset, else leave it.
 //
 STATIC UINT64 gDbtPacVal = 0;
+
+STATIC UINT64 gDbtKputcChar = 0;
+
+VOID DbtKernelPutc (VOID) {
+  UINTN C = (UINTN)(gDbtKputcChar & 0xFF);
+  DEBUG ((DEBUG_INFO, "DBT_KPUT: '%c' (0x%02x)\n",
+          (C >= 0x20 && C < 0x7F) ? (UINTN)C : (UINTN)'.', C));
+}
 
 UINT64 DbtPacResolve (VOID) {
   UINT64 Lo = gDbtPacVal & 0xFFFFFFFF;

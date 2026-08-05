@@ -1188,6 +1188,18 @@ SKIP_READ_APPLE_KERNEL:
     // Set up basics manually since we only need the entry point.
     //
     MACH_HEADER_64  *Hdr = (MACH_HEADER_64 *)KernelBuffer;
+
+    //
+    // Force the kernel console "enabled" flag to 1.  In the stock image it
+    // is 0, which sends pe_kputc down the emergency slot path
+    // (console slots 0x7E287B8 hold linker-signed pointers that cannot be
+    // authenticated without the hardware PAC key).  With the flag set the
+    // fast ret path is taken instead and the kernel boot continues without
+    // stalling in a bogus console function.
+    //
+    if (KernelSize > 0x59BE860) {
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0x59BE860) = 1;
+    }
     if (Hdr->Signature != MACH_HEADER_64_SIGNATURE) {
       DEBUG ((DEBUG_ERROR, "DirectKernel: Invalid Mach-O 64 magic %08X\n", Hdr->Signature));
       FreePool (KernelBuffer);
