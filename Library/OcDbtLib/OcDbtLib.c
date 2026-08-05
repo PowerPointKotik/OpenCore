@@ -3177,6 +3177,24 @@ VOID DbtTraceBlock (VOID) {
   }
 
   //
+  // Stack canary prologue/epilogue spies (never gated): __doprnt stores the
+  // guard to [x29,#-0x58] at 0xBBEFB18 and compares it back at 0xBBF0840.
+  // The epilogue's ldur is not hitting the stack, so x29 must be off —
+  // print it at both points with the computed canary slot.
+  //
+  if (gDbtActiveState != NULL) {
+    if (gDbtTracePc == 0xFFFFFE000BBEFB18ull) {
+      DBG((DEBUG_INFO, "DBT_CANP: prologue x29=0x%llx sp=0x%llx slot=0x%llx\n",
+           gDbtActiveState->X[29], gDbtActiveState->SP,
+           gDbtActiveState->X[29] - 0x58));
+    } else if (gDbtTracePc == 0xFFFFFE000BBF0840ull) {
+      DBG((DEBUG_INFO, "DBT_CANE: epilogue x29=0x%llx sp=0x%llx slot=0x%llx\n",
+           gDbtActiveState->X[29], gDbtActiveState->SP,
+           gDbtActiveState->X[29] - 0x58));
+    }
+  }
+
+  //
   // Lightweight (never gated by the verbose trace): spy on the kvprintf
   // format dispatch block so the '%s' conversion index stays decodable
   // without flooding the whole boot.  Short line, survives the firmware
