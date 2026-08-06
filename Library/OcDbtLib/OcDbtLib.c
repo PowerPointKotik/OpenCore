@@ -75,9 +75,7 @@ STATIC UINT64       gDbtHelperVa  = 0;
 UINT64 DbtPacResolve (VOID);
 STATIC VOID EmitPacResolve (UINT8 **P);
 VOID DbtKernelPutc (VOID);
-STATIC UINT64 gDbtKputcChar = 0;   // char being printed by the kernel console hook
 VOID DbtStrlenGuard (VOID);
-STATIC UINT64 gDbtStrlenX1 = 0;    // string pointer checked by the strlen guard
 
 //
 // Guard for the kernel's NEON strlen loop (0xBB79720): if the string
@@ -3207,6 +3205,8 @@ EFI_STATUS DbtSetSegments (DBT_CONTEXT *Ctx, UINTN SegCount, UINT64 *SegVmAddr,
 // offset, else leave it.
 //
 STATIC UINT64 gDbtPacVal = 0;
+
+STATIC UINT64 gDbtKputcChar = 0;   // char being printed by the kernel console hook
 
 VOID DbtKernelPutc (VOID) {
   UINTN C = (UINTN)(gDbtKputcChar & 0xFF);
