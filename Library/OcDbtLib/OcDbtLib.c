@@ -76,6 +76,26 @@ UINT64 DbtPacResolve (VOID);
 STATIC VOID EmitPacResolve (UINT8 **P);
 VOID DbtKernelPutc (VOID);
 STATIC UINT64 gDbtKputcChar = 0;   // char being printed by the kernel console hook
+VOID DbtStrlenGuard (VOID);
+STATIC UINT64 gDbtStrlenX1 = 0;    // string pointer checked by the strlen guard
+
+//
+// Guard for the kernel's NEON strlen loop (0xBB79720): if the string
+// pointer is outside the kernel image (garbage va_arg, e.g. 0xF8F51260)
+// the loop scans memory forever.  Redirect it to an empty string so the
+// print is skipped and the kernel can continue.
+//
+STATIC UINT64 gDbtStrlenX1 = 0;
+STATIC UINT8  gDbtStrlenZero[32] = { 0 };
+
+VOID DbtStrlenGuard (VOID) {
+  UINT64 Z = (UINT64)(UINTN)gDbtStrlenZero;
+
+  if (gDbtStrlenX1 < 0xFFFFFE0000000000ull &&
+      (gDbtStrlenX1 < Z || gDbtStrlenX1 >= Z + sizeof (gDbtStrlenZero) + 0x100)) {
+    gDbtStrlenX1 = Z;
+  }
+}
 
 //
 // Runtime trace scratch slots.  Translated code stores the guest PC, the
@@ -1426,6 +1446,23 @@ STATIC UINTN DbtTranslateOne (
     EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x08);   // MOV [RAX], RCX
     EmitMovImm(&P, (UINT64)(UINTN)DbtKernelPutc);
     EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);                 // CALL RAX
+  }
+
+  //
+  // Kernel strlen loop guard (0xBB79720): re-point X1 at an empty string
+  // when it is garbage so the NEON zero-scan cannot run forever.
+  //
+  if (InstAddr == 0xFFFFFE000BB79720) {
+    EmitLoadRax(&P, ArmRegXOff(1));
+    EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0xC1);   // MOV RCX, RAX
+    EmitMovImm(&P, (UINT64)(UINTN)&gDbtStrlenX1);
+    EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x08);   // MOV [RAX], RCX
+    EmitMovImm(&P, (UINT64)(UINTN)DbtStrlenGuard);
+    EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);                 // CALL RAX
+    EmitMovImm(&P, (UINT64)(UINTN)&gDbtStrlenX1);
+    EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x08);   // MOV RCX, [RAX]
+    EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0xC8);   // MOV RAX, RCX
+    EmitStoreRax(&P, ArmRegXOff(1));                        // restore X1
   }
 
   (VOID)BufSize;
