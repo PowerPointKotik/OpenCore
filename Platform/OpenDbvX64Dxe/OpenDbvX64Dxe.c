@@ -95,6 +95,39 @@ IsPcUpdatingBranch (
 }
 
 //
+// Allocate the kernel image buffer below 1 GB if possible.  AllocatePool
+// usually lands in the 2.3-2.6 GB region where reads are unreliable on
+// this platform (observed: a UINT32 read of 0x01CEE165 and a UINT8 read
+// of 0x00 at the very same address), which corrupts the translated
+// loads/stores.  Fall back to any pages if the low range is exhausted.
+//
+STATIC
+VOID *
+AllocKernelImageBuffer (
+  IN UINTN  Size
+  )
+{
+  EFI_PHYSICAL_ADDRESS  Addr;
+  EFI_STATUS            Status;
+  UINTN                 Pages;
+
+  if (Size == 0) {
+    return NULL;
+  }
+  Pages = EFI_SIZE_TO_PAGES (Size);
+
+  Addr   = 0x40000000;   // 1 GB
+  Status = gBS->AllocatePages (AllocateMaxAddress, EfiBootServicesData, Pages, &Addr);
+  if (EFI_ERROR (Status)) {
+    Status = gBS->AllocatePages (AllocateAnyPages, EfiBootServicesData, Pages, &Addr);
+  }
+  if (EFI_ERROR (Status)) {
+    return NULL;
+  }
+  return (VOID *)(UINTN)Addr;
+}
+
+//
 // Read kernelcache from ZIP file.
 // Returns allocated buffer with kernel data, or NULL.
 //
@@ -344,7 +377,7 @@ ReadKernelFromZip (
     //
     // Read uncompressed data directly
     //
-    Result = AllocatePool (UncompSize + 1);
+    Result = AllocKernelImageBuffer (UncompSize + 1);
     if (Result != NULL) {
       Status = ZipFile->SetPosition (ZipFile, DataOffset);
       if (!EFI_ERROR (Status)) {
@@ -374,7 +407,7 @@ ReadKernelFromZip (
         ReadSize = CompressedSize;
         Status = ZipFile->Read (ZipFile, &ReadSize, CompBuf);
         if (!EFI_ERROR (Status)) {
-          Result = AllocatePool (UncompSize + 1);
+          Result = AllocKernelImageBuffer (UncompSize + 1);
           if (Result != NULL) {
             z_stream  Strm;
             INT32     Ret;
