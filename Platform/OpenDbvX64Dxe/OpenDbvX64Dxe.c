@@ -1236,7 +1236,12 @@ SKIP_READ_APPLE_KERNEL:
     // the DBT) runs instead.
     //
     if (KernelSize > 0xFDDC90) {
-      *(volatile UINT32 *)((UINTN)KernelBuffer + 0xFDDC90) = 1;
+      //
+      // Set bit 0 of the static-memory-ready flag.  The word already
+      // holds a meaningful value (0x01CEE164) that other code reads, so
+      // OR the bit in instead of clobbering the whole word.
+      //
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0xFDDC90) |= 1;
     }
     if (Hdr->Signature != MACH_HEADER_64_SIGNATURE) {
       DEBUG ((DEBUG_ERROR, "DirectKernel: Invalid Mach-O 64 magic %08X\n", Hdr->Signature));
