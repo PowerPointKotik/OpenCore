@@ -75,6 +75,7 @@ STATIC UINT64       gDbtHelperVa  = 0;
 UINT64 DbtPacResolve (VOID);
 STATIC VOID EmitPacResolve (UINT8 **P);
 VOID DbtKernelPutc (VOID);
+STATIC UINT64 gDbtKputcChar = 0;   // char being printed by the kernel console hook
 VOID DbtStrlenGuard (VOID);
 
 //
@@ -3205,8 +3206,6 @@ EFI_STATUS DbtSetSegments (DBT_CONTEXT *Ctx, UINTN SegCount, UINT64 *SegVmAddr,
 // offset, else leave it.
 //
 STATIC UINT64 gDbtPacVal = 0;
-
-STATIC UINT64 gDbtKputcChar = 0;   // char being printed by the kernel console hook
 
 VOID DbtKernelPutc (VOID) {
   UINTN C = (UINTN)(gDbtKputcChar & 0xFF);
