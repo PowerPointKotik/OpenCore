@@ -1239,9 +1239,15 @@ SKIP_READ_APPLE_KERNEL:
       //
       // Set bit 0 of the static-memory-ready flag.  The word already
       // holds a meaningful value (0x01CEE164) that other code reads, so
-      // OR the bit in instead of clobbering the whole word.
+      // OR the bit in instead of clobbering the whole word.  Also patch
+      // the same flag as seen through the simple (base-offset) mapping
+      // (0xF47C90) in case the translated load path resolves image
+      // addresses that way.
       //
       *(volatile UINT32 *)((UINTN)KernelBuffer + 0xFDDC90) |= 1;
+      if (KernelSize > 0xF47C90) {
+        *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF47C90) |= 1;
+      }
     }
     if (Hdr->Signature != MACH_HEADER_64_SIGNATURE) {
       DEBUG ((DEBUG_ERROR, "DirectKernel: Invalid Mach-O 64 magic %08X\n", Hdr->Signature));

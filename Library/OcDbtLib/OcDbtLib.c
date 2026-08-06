@@ -3243,16 +3243,17 @@ STATIC UINT64 gDbtPacVal = 0;
 VOID DbtSpyC518580 (VOID) {
   DBT_CONTEXT *Ctx = gDbtActiveCtx;
   UINT8       *KB  = (Ctx != NULL) ? Ctx->KernelBuffer : NULL;
-  UINT32       Flag, Lo, Hi;
+  UINT32       Flag, Lo, Hi, Simple;
 
   if (KB == NULL) {
     return;
   }
-  Flag = *(volatile UINT32 *)(UINTN)(KB + 0xFDDC90);
-  Lo   = *(volatile UINT32 *)(UINTN)(KB + 0xFDCB8);   // 0x7F47CB8
-  Hi   = *(volatile UINT32 *)(UINTN)(KB + 0xFDCB8 + 8); // 0x7F47CC0
-  DEBUG ((DEBUG_INFO, "DBT_SPY: ml_static_ptovirt(x0=%016llx) flag=%08x lo=%08x hi=%08x\n",
-          gDbtSpyX0, Flag, Lo, Hi));
+  Flag   = *(volatile UINT32 *)(UINTN)(KB + 0xFDDC90);   // segment-map flag
+  Simple = *(volatile UINT32 *)(UINTN)(KB + 0xF47C90);   // base-offset map flag
+  Lo     = *(volatile UINT32 *)(UINTN)(KB + 0xFDDCB8);   // 0x7F47CB8
+  Hi     = *(volatile UINT32 *)(UINTN)(KB + 0xFDDCC0);   // 0x7F47CC0
+  DEBUG ((DEBUG_INFO, "DBT_SPY: ptovirt(x0=%016llx) segflag=%08x baseflag=%08x lo=%08x hi=%08x\n",
+          gDbtSpyX0, Flag, Simple, Lo, Hi));
 }
 
 VOID DbtKernelPutc (VOID) {
