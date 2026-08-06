@@ -3346,9 +3346,13 @@ VOID DbtSpyC518580 (VOID) {
     Mapped = 0xFFFFFE0007F47C90ull;   // identity fallback
   }
   DEBUG ((DEBUG_INFO,
-          "DBT_SPY: ptovirt(x0=%016llx) segflag=%08x baseflag=%08x lo=%08x hi=%08x map=%016llx byte=%02x\n",
+          "DBT_SPY: ptovirt(x0=%016llx) segflag=%08x baseflag=%08x lo=%08x hi=%08x map=%016llx byte=%02x kb=%016llx so2=%016llx va2=%016llx n=%u\n",
           gDbtSpyX0, Flag, Simple, Lo, Hi, Mapped,
-          *(volatile UINT8 *)(UINTN)Mapped));
+          *(volatile UINT8 *)(UINTN)Mapped,
+          (Ctx != NULL) ? (UINT64)(UINTN)Ctx->KernelBuffer : 0,
+          (Ctx != NULL && Ctx->SegCount > 2) ? Ctx->SegFileOff[2] : 0,
+          (Ctx != NULL && Ctx->SegCount > 2) ? Ctx->SegVmAddr[2] : 0,
+          (Ctx != NULL) ? (UINT32)Ctx->SegCount : 0));
 }
 
 VOID DbtKernelPutc (VOID) {
