@@ -77,7 +77,9 @@ STATIC VOID EmitPacResolve (UINT8 **P);
 VOID DbtKernelPutc (VOID);
 STATIC UINT64 gDbtKputcChar = 0;   // char being printed by the kernel console hook
 STATIC UINT64 gDbtKputcCount = 0;  // chars printed through the hook
+STATIC UINT64 gDbtSpyX0 = 0;       // arg of the ml_static_ptovirt spy hook
 VOID DbtStrlenGuard (VOID);
+VOID DbtSpyC518580 (VOID);
 
 //
 // Guard for the kernel's NEON strlen loop (0xBB79720): if the string
@@ -1463,6 +1465,20 @@ STATIC UINTN DbtTranslateOne (
     EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x08);   // MOV RCX, [RAX]
     EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0xC8);   // MOV RAX, RCX
     EmitStoreRax(&P, ArmRegXOff(1));                        // restore X1
+  }
+
+  //
+  // Spy on ml_static_ptovirt (0xC518580): log the incoming VA and the
+  // static-memory globals so the kvtophys_nofail failure reason is
+  // visible even though image-region ldrb accesses are not traced.
+  //
+  if (InstAddr == 0xFFFFFE000C518580) {
+    EmitLoadRax(&P, ArmRegXOff(0));
+    EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0xC1);   // MOV RCX, RAX
+    EmitMovImm(&P, (UINT64)(UINTN)&gDbtSpyX0);
+    EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x08);   // MOV [RAX], RCX
+    EmitMovImm(&P, (UINT64)(UINTN)DbtSpyC518580);
+    EmitByte(&P, 0xFF); EmitByte(&P, 0xD0);                 // CALL RAX
   }
 
   (VOID)BufSize;
@@ -3223,6 +3239,21 @@ EFI_STATUS DbtSetSegments (DBT_CONTEXT *Ctx, UINTN SegCount, UINT64 *SegVmAddr,
 // offset, else leave it.
 //
 STATIC UINT64 gDbtPacVal = 0;
+
+VOID DbtSpyC518580 (VOID) {
+  DBT_CONTEXT *Ctx = gDbtActiveCtx;
+  UINT8       *KB  = (Ctx != NULL) ? Ctx->KernelBuffer : NULL;
+  UINT32       Flag, Lo, Hi;
+
+  if (KB == NULL) {
+    return;
+  }
+  Flag = *(volatile UINT32 *)(UINTN)(KB + 0xFDDC90);
+  Lo   = *(volatile UINT32 *)(UINTN)(KB + 0xFDCB8);   // 0x7F47CB8
+  Hi   = *(volatile UINT32 *)(UINTN)(KB + 0xFDCB8 + 8); // 0x7F47CC0
+  DEBUG ((DEBUG_INFO, "DBT_SPY: ml_static_ptovirt(x0=%016llx) flag=%08x lo=%08x hi=%08x\n",
+          gDbtSpyX0, Flag, Lo, Hi));
+}
 
 VOID DbtKernelPutc (VOID) {
   UINTN C = (UINTN)(gDbtKputcChar & 0xFF);
