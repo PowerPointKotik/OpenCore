@@ -1235,8 +1235,8 @@ SKIP_READ_APPLE_KERNEL:
     // so the static walk (and the AT S1E1R fallback, emulated as PA=VA in
     // the DBT) runs instead.
     //
-    if (KernelSize > 0x2DDC90) {
-      *(volatile UINT32 *)((UINTN)KernelBuffer + 0x2DDC90) = 1;
+    if (KernelSize > 0xFDDC90) {
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0xFDDC90) = 1;
     }
     if (Hdr->Signature != MACH_HEADER_64_SIGNATURE) {
       DEBUG ((DEBUG_ERROR, "DirectKernel: Invalid Mach-O 64 magic %08X\n", Hdr->Signature));
