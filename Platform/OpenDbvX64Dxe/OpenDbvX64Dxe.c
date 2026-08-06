@@ -1200,6 +1200,17 @@ SKIP_READ_APPLE_KERNEL:
     if (KernelSize > 0x59BE860) {
       *(volatile UINT32 *)((UINTN)KernelBuffer + 0x59BE860) = 1;
     }
+
+    //
+    // The timebase bit index global (0x7EB55C8) is written by the real
+    // bootloader (boot.efi) before handing control to the kernel; in the
+    // stock image it is 0xFFFFFFFF, which trips the 'invalid bit index'
+    // panic in _enable_timebase_event_stream.  Zero is a valid index
+    // (< 0x40), so patch it like the bootloader would.
+    //
+    if (KernelSize > 0xEB15C8) {
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0xEB15C8) = 0;
+    }
     if (Hdr->Signature != MACH_HEADER_64_SIGNATURE) {
       DEBUG ((DEBUG_ERROR, "DirectKernel: Invalid Mach-O 64 magic %08X\n", Hdr->Signature));
       FreePool (KernelBuffer);
