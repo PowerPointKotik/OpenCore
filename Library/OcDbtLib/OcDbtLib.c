@@ -76,6 +76,7 @@ UINT64 DbtPacResolve (VOID);
 STATIC VOID EmitPacResolve (UINT8 **P);
 VOID DbtKernelPutc (VOID);
 STATIC UINT64 gDbtKputcChar = 0;   // char being printed by the kernel console hook
+STATIC UINT64 gDbtKputcCount = 0;  // chars printed through the hook
 VOID DbtStrlenGuard (VOID);
 
 //
@@ -3209,6 +3210,30 @@ STATIC UINT64 gDbtPacVal = 0;
 
 VOID DbtKernelPutc (VOID) {
   UINTN C = (UINTN)(gDbtKputcChar & 0xFF);
+
+  if (gDbtKputcCount == 0 && gDbtActiveState != NULL) {
+    //
+    // First kernel print (usually the panic banner): dump the guest
+    // frame chain so the caller of the failing code is visible without
+    // waiting for the (very slow) panic backtrace to finish.
+    //
+    UINT64 Fp = gDbtActiveState->X[29];
+    UINTN  I;
+
+    DEBUG ((DEBUG_INFO, "DBT_GSTACK: fp=%016llx lr=%016llx sp=%016llx\n",
+            Fp, gDbtActiveState->X[30], gDbtActiveState->SP));
+    for (I = 0; I < 12 && Fp >= 0xA4000000ull && Fp < 0xA5000000ull; I++) {
+      UINT64 Nxt = *(volatile UINT64 *)(UINTN)(Fp);
+      UINT64 Lr  = *(volatile UINT64 *)(UINTN)(Fp + 8);
+      DEBUG ((DEBUG_INFO, "DBT_GSTACK: frame%u lr=%016llx\n", I, Lr));
+      if (Nxt == 0 || Nxt <= Fp) {
+        break;
+      }
+      Fp = Nxt;
+    }
+  }
+  gDbtKputcCount++;
+
   DEBUG ((DEBUG_INFO, "DBT_KPUT: '%c' (0x%02x)\n",
           (C >= 0x20 && C < 0x7F) ? (UINTN)C : (UINTN)'.', C));
 }
