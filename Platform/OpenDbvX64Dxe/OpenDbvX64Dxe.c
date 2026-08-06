@@ -1211,6 +1211,21 @@ SKIP_READ_APPLE_KERNEL:
     if (KernelSize > 0xEB15C8) {
       *(volatile UINT32 *)((UINTN)KernelBuffer + 0xEB15C8) = 0;
     }
+
+    //
+    // The kernel's NEON strlen (0xBB796F0) loops on LDR-Q/UMINV/FMOV,
+    // which the DBT does not emulate: W2 never becomes zero, so the
+    // CBZ exit (0xBB7972C) never fires and the loop spins forever.
+    // Patch the loop exit to a NOP and the final FMOV to MOV W2,#0, so
+    // the scan runs once and returns length 0 (bogus %s prints are
+    // skipped) instead of hanging.
+    //
+    if (KernelSize > 0x4B7572C + 4) {
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0x4B7572C) = 0xD503201F;  // NOP (was cbnz w2, loop)
+    }
+    if (KernelSize > 0x4B75740 + 4) {
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0x4B75740) = 0x52800002;  // MOV W2, #0 (was fmov w2, s1)
+    }
     if (Hdr->Signature != MACH_HEADER_64_SIGNATURE) {
       DEBUG ((DEBUG_ERROR, "DirectKernel: Invalid Mach-O 64 magic %08X\n", Hdr->Signature));
       FreePool (KernelBuffer);
