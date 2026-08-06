@@ -24,6 +24,7 @@ typedef struct {
   UINT64 SP_EL1;    // EL1 stack pointer
   UINT64 ELR_EL1;   // Exception link register
   UINT64 SPSR_EL1;  // Saved PSTATE
+  UINT64 PAR_EL1;   // AT-translation result (PA==VA emulation)
   //
   // System register stubs
   //

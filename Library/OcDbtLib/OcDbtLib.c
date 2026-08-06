@@ -2390,6 +2390,15 @@ STATIC UINTN DbtTranslateOne (
           // TTBR0_EL1 — page table base
           DBG_D((DEBUG_INFO, "DBT_MMU:  MSR TTBR0_EL1 <- X%d\n", Rt));
           EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, TTBR0_EL1));
+        } else if (Op0 == 1 && Op1 == 0 && CRn == 7 && CRm == 8 && Op2 == 0) {
+          //
+          // AT S1E1R: hardware VA->PA translation.  The kernel reads the
+          // result from PAR_EL1; emulate with PA == guest VA so the
+          // returned "physical" address is never 0 and matches the DBT's
+          // flat guest memory map.
+          //
+          DBG((DEBUG_INFO, "DBT_MMU:  AT S1E1R <- X%d (PA=VA)\n", Rt));
+          EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, PAR_EL1));
         } else if (Op0 == 3 && Op1 == 0 && CRn == 2 && CRm == 1) {
           DBG_D((DEBUG_INFO, "DBT_MMU:  MSR TTBR1_EL1 <- X%d\n", Rt));
           EmitStoreRax(&P, OFFSET_OF(DBT_ARM64_STATE, TTBR1_EL1));
@@ -2462,6 +2471,13 @@ STATIC UINTN DbtTranslateOne (
         } else if (Op0 == 3 && Op1 == 0 && CRn == 12 && CRm == 0) {
           Off = OFFSET_OF(DBT_ARM64_STATE, VBAR_EL1);
           DBG((DEBUG_INFO, "DBT_EXC: MRS X%d, VBAR_EL1\n", Rt));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 4 && CRm == 0 && Op2 == 0) {
+          // PAR_EL1 — AT translation result (see the AT S1E1R emulation)
+          Off = OFFSET_OF(DBT_ARM64_STATE, PAR_EL1);
+          DBG((DEBUG_INFO, "DBT_MMU:  MRS X%d, PAR_EL1\n", Rt));
+        } else if (Op0 == 3 && Op1 == 0 && CRn == 4 && CRm == 0 && Op2 == 1) {
+          Off = OFFSET_OF(DBT_ARM64_STATE, SPSR_EL1);
+          DBG((DEBUG_INFO, "DBT_EXC: MRS X%d, SPSR_EL1\n", Rt));
         } else {
           Known = FALSE;
           DBG_D((DEBUG_INFO, "DBT_SYS:  MRS X%d, unknown sysreg (key=0x%x)\n", Rt, Key));

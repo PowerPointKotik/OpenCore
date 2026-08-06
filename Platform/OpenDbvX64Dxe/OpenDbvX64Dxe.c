@@ -1226,6 +1226,18 @@ SKIP_READ_APPLE_KERNEL:
     if (KernelSize > 0x4B75740 + 4) {
       *(volatile UINT32 *)((UINTN)KernelBuffer + 0x4B75740) = 0x52800002;  // MOV W2, #0 (was fmov w2, s1)
     }
+
+    //
+    // The static-memory-ready flag [0x7F47C90] is 0 in the stock image
+    // (set by the early boot memory setup that never runs here).  With it
+    // clear, ml_static_ptovirt (0xC518580) returns error 1 and the kernel
+    // panics 'kvtophys_nofail: VA->PA translation failed'.  Set the flag
+    // so the static walk (and the AT S1E1R fallback, emulated as PA=VA in
+    // the DBT) runs instead.
+    //
+    if (KernelSize > 0x2DDC90) {
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0x2DDC90) = 1;
+    }
     if (Hdr->Signature != MACH_HEADER_64_SIGNATURE) {
       DEBUG ((DEBUG_ERROR, "DirectKernel: Invalid Mach-O 64 magic %08X\n", Hdr->Signature));
       FreePool (KernelBuffer);
