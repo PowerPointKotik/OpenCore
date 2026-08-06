@@ -1947,9 +1947,51 @@ STATIC UINTN DbtTranslateOne (
                             TRUE, 0, ShiftKind, (UINT8)ShAmt, IsW);
         }
       } else {
-        // ADD/SUB shifted register
+        // ADD/SUB register: shifted (bit21=0) or extended (bit21=1)
         BOOLEAN IsSub     = (Inst >> 30) & 1;
         BOOLEAN SetFlags  = (Inst >> 29) & 1;
+
+        if ((Inst >> 21) & 1) {
+          //
+          // ADD/SUB extended register: Xd = Xn + extend(Wm) << shift.
+          // Extend kinds (bits 23:22): 0=UXTB 1=UXTW 2=SXTB 3=SXTW.
+          //
+          UINT32 Ext = (Inst >> 22) & 3;
+          UINT32 Amt = (Inst >> 10) & 0x7;
+
+          DBG_ASM((DEBUG_INFO, "DBT_ASM:    %s%s X%d, X%d, W%d, ext%d #%u\n",
+                   IsSub ? "SUB" : "ADD", SetFlags ? " (flags)" : "",
+                   Rd, Rn, Rm, Ext, Amt));
+
+          if (Rn == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, RnOff); }
+          if (IsW) EmitTrunc32(&P);
+          if (Rm == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, RmOff); }
+          if (Ext == 0) {          // UXTB
+            EmitByte(&P, 0x0F); EmitByte(&P, 0xB6); EmitByte(&P, 0xC1);  // MOVZX EAX, CL
+            EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0xC1);        // MOV RCX, RAX
+          } else if (Ext == 1) {   // UXTW
+            EmitByte(&P, 0x89); EmitByte(&P, 0xC9);                      // MOV ECX, ECX
+          } else if (Ext == 2) {   // SXTB
+            EmitRexW(&P); EmitByte(&P, 0x0F); EmitByte(&P, 0xBE); EmitByte(&P, 0xC1);  // MOVSX RAX, CL
+            EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0xC1);        // MOV RCX, RAX
+          } else {                 // SXTW
+            EmitRexW(&P); EmitByte(&P, 0x63); EmitByte(&P, 0xC9);        // MOVSXD RCX, ECX
+          }
+          if (Amt != 0) { EmitShlRcxImm(&P, (UINT8)Amt); }
+          if (IsSub) EmitSubRaxRcx(&P);
+          else       EmitAddRaxRcx(&P);
+          if (IsW) EmitTrunc32(&P);
+          if ((Rd == 31) && !IsW && !SetFlags) {
+            EmitStoreRax(&P, SpOff);
+          } else if (Rd != 31) {
+            EmitStoreRax(&P, RdOff);
+          }
+          if (SetFlags) {
+            EmitRecordFlagSet(Ctx, FLAGKIND_ADDSUB, IsSub, 0, Rd, Rn, Rm,
+                              TRUE, 0, (UINT8)((Ext << 1) | 1), Amt, IsW);
+          }
+          return (UINTN)(P - X86Buf);
+        }
 
         DBG_ASM((DEBUG_INFO, "DBT_ASM:    %s%s X%d, X%d, X%d%s\n",
                  IsSub ? "SUB" : "ADD", SetFlags ? " (flags)" : "", Rd, Rn, Rm,
@@ -2231,6 +2273,35 @@ STATIC UINTN DbtTranslateOne (
       UINT32  Ra    = (Inst >> 10) & 0x1F;
       UINT32  RaOff = (Ra == 31) ? 0 : ArmRegXOff(Ra);
       BOOLEAN IsSub = S15;
+
+      //
+      // UMULL/SMULL: Xd = Wn * Wm (32-bit inputs, 64-bit product).  Encoded
+      // in this family with sf=1 (64-bit result) and bit 21 = 0 (W inputs);
+      // the 64-bit MADD/MSUB/X forms use bit 21 = 1, the 32-bit forms
+      // sf=0.  The decoder's IsW (from sf) alone cannot tell them apart.
+      //
+      if (((Inst >> 31) & 1) && !((Inst >> 21) & 1)) {
+        BOOLEAN IsSmull = ((Inst >> 30) & 1) != 0;   // SMULL (signed) / UMULL
+
+        DBG_ASM((DEBUG_INFO, "DBT_ASM:    %sLL X%d, W%d, W%d\n",
+                 IsSmull ? "SM" : "UM", Rd, Rn, Rm));
+        if (Rn == 31) { EmitMovImm(&P, 0); } else { EmitLoadRax(&P, RnOff); }
+        EmitTrunc32(&P);                                     // Wn (32-bit)
+        if (Rm == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, RmOff); }
+        EmitByte(&P, 0x89); EmitByte(&P, 0xC9);              // MOV ECX, ECX
+        if (IsSmull) {
+          EmitRexW(&P); EmitByte(&P, 0x0F); EmitByte(&P, 0xAF); EmitByte(&P, 0xC8);  // IMUL RAX, RAX, ECX? no —
+          // signed 32x32 -> 64: MOVSXD twice then IMUL
+          EmitRexW(&P); EmitByte(&P, 0x63); EmitByte(&P, 0xC8);  // MOVSXD RCX, EAX
+          EmitRexW(&P); EmitByte(&P, 0x63); EmitByte(&P, 0xC0);  // MOVSXD RAX, EAX
+          EmitRexW(&P); EmitByte(&P, 0x0F); EmitByte(&P, 0xAF); EmitByte(&P, 0xC1);  // IMUL RAX, RCX
+        } else {
+          EmitImulRaxRcx(&P);                                  // unsigned: zero-extended inputs
+        }
+        if (Rd != 31) EmitStoreRax(&P, RdOff);
+        EmitNop(&P);
+        return (UINTN)(P - X86Buf);
+      }
 
       DBG_ASM((DEBUG_INFO, "DBT_ASM:    %s %s%d, %s%d, %s%d, %s%d\n",
                IsSub ? "MSUB" : "MADD", IsW ? "W" : "X", Rd,
