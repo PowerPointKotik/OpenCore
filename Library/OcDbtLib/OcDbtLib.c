@@ -3315,6 +3315,8 @@ VOID DbtSpyC518580 (VOID) {
   DBT_CONTEXT *Ctx = gDbtActiveCtx;
   UINT8       *KB  = (Ctx != NULL) ? Ctx->KernelBuffer : NULL;
   UINT32       Flag, Lo, Hi, Simple;
+  UINT64       Mapped;
+  UINTN        I;
 
   if (KB == NULL) {
     return;
@@ -3323,8 +3325,30 @@ VOID DbtSpyC518580 (VOID) {
   Simple = *(volatile UINT32 *)(UINTN)(KB + 0xF47C90);   // base-offset map flag
   Lo     = *(volatile UINT32 *)(UINTN)(KB + 0xFDDCB8);   // 0x7F47CB8
   Hi     = *(volatile UINT32 *)(UINTN)(KB + 0xFDDCC0);   // 0x7F47CC0
-  DEBUG ((DEBUG_INFO, "DBT_SPY: ptovirt(x0=%016llx) segflag=%08x baseflag=%08x lo=%08x hi=%08x\n",
-          gDbtSpyX0, Flag, Simple, Lo, Hi));
+
+  //
+  // Resolve 0x7F47C90 the way the translated load does, and report the
+  // resulting host address plus the byte there, to tell apart a segment
+  // mapping problem from a wrong flag value.
+  //
+  Mapped = 0;
+  if (Ctx != NULL) {
+    for (I = 0; I < Ctx->SegCount; I++) {
+      if (0xFFFFFE0007F47C90ull >= Ctx->SegVmAddr[I] &&
+          0xFFFFFE0007F47C90ull < Ctx->SegVmAddr[I] + Ctx->SegVmSize[I]) {
+        Mapped = (UINT64)(UINTN)(Ctx->KernelBuffer + Ctx->SegFileOff[I]
+                                 + (0xFFFFFE0007F47C90ull - Ctx->SegVmAddr[I]));
+        break;
+      }
+    }
+  }
+  if (Mapped == 0) {
+    Mapped = 0xFFFFFE0007F47C90ull;   // identity fallback
+  }
+  DEBUG ((DEBUG_INFO,
+          "DBT_SPY: ptovirt(x0=%016llx) segflag=%08x baseflag=%08x lo=%08x hi=%08x map=%016llx byte=%02x\n",
+          gDbtSpyX0, Flag, Simple, Lo, Hi, Mapped,
+          *(volatile UINT8 *)(UINTN)Mapped));
 }
 
 VOID DbtKernelPutc (VOID) {
