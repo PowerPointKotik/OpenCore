@@ -1303,6 +1303,25 @@ SKIP_READ_APPLE_KERNEL:
         *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF47C90) |= 1;
       }
     }
+
+    //
+    // The physical memory page holding 0x7F47C90..0x7F47CC0 is unreliable
+    // on this platform (different reads of the same address return
+    // different values, even in a freshly re-hosted low buffer).  The
+    // static-memory walk can therefore never see the flag reliably.
+    // Patch the code instead:
+    //   - 0xC51858C 'tbz w8, #0' -> NOP, so ml_static_ptovirt always
+    //     takes the main path (which falls through to the AT S1E1R
+    //     fallback, emulated as PA=VA in the DBT)
+    //   - [0x7F47C98] entry count -> 0, so the table scan is skipped
+    //     (the file holds garbage 0x01CD56A0 that would loop ~30M times)
+    //
+    if (KernelSize > 0x551458C + 4) {
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0x551458C) = 0xD503201F;  // NOP (was tbz w8, #0)
+    }
+    if (KernelSize > 0xFDDC98 + 4) {
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0xFDDC98) = 0;            // entry count
+    }
     if (Hdr->Signature != MACH_HEADER_64_SIGNATURE) {
       DEBUG ((DEBUG_ERROR, "DirectKernel: Invalid Mach-O 64 magic %08X\n", Hdr->Signature));
       FreePool (KernelBuffer);
