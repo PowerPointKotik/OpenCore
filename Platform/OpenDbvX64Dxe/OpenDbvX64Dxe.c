@@ -116,8 +116,17 @@ AllocKernelImageBuffer (
   }
   Pages = EFI_SIZE_TO_PAGES (Size);
 
-  Addr   = 0x40000000;   // 1 GB
+  //
+  // The 0x389-0x39A MB window (and the 2.4 GB one) proved unreliable on
+  // this platform (reads of the same address return different values).
+  // Try successively lower ranges: 512 MB, 1 GB, then any pages.
+  //
+  Addr   = 0x20000000;   // 512 MB
   Status = gBS->AllocatePages (AllocateMaxAddress, EfiBootServicesData, Pages, &Addr);
+  if (EFI_ERROR (Status)) {
+    Addr   = 0x40000000;   // 1 GB
+    Status = gBS->AllocatePages (AllocateMaxAddress, EfiBootServicesData, Pages, &Addr);
+  }
   if (EFI_ERROR (Status)) {
     Status = gBS->AllocatePages (AllocateAnyPages, EfiBootServicesData, Pages, &Addr);
   }
