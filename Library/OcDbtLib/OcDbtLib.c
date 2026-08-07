@@ -3357,9 +3357,9 @@ VOID DbtSpyC518580 (VOID) {
   Ctrl2 = *(volatile UINT32 *)(UINTN)(KB + 0xFDC678);   // 0x7F46C78
 
   DEBUG ((DEBUG_INFO,
-          "DBT_SPY: ptovirt(x0=%016llx) segflag=%08x baseflag=%08x map=%016llx "
+          "DBT_SPY: ptovirt(x0=%016llx) segflag=%08x baseflag=%08x lo=%08x hi=%08x map=%016llx "
           "b1=%02x b2=%02x b3=%02x c1=%08x c2=%08x kb=%016llx\n",
-          gDbtSpyX0, Flag, Simple, Mapped, B1, B2, B3, Ctrl1, Ctrl2,
+          gDbtSpyX0, Flag, Simple, Lo, Hi, Mapped, B1, B2, B3, Ctrl1, Ctrl2,
           (Ctx != NULL) ? (UINT64)(UINTN)Ctx->KernelBuffer : 0));
 }
 
