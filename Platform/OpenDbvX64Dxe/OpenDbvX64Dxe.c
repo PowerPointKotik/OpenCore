@@ -1272,7 +1272,10 @@ SKIP_READ_APPLE_KERNEL:
     // (< 0x40), so patch it like the bootloader would.
     //
     if (KernelSize > 0xEB15C8) {
-      *(volatile UINT32 *)((UINTN)KernelBuffer + 0xEB15C8) = 0;
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0xEB15C8) = 0;   // simple offset
+      if (KernelSize > 0xF235C8 + 4) {
+        *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF235C8) = 0; // segment offset
+      }
     }
 
     //
@@ -1329,27 +1332,42 @@ SKIP_READ_APPLE_KERNEL:
       *(volatile UINT32 *)((UINTN)KernelBuffer + 0x551458C) = 0xD503201F;  // NOP (was tbz w8, #0)
     }
     if (KernelSize > 0xFDDC98 + 4) {
-      *(volatile UINT32 *)((UINTN)KernelBuffer + 0xFDDC98) = 0;            // entry count
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0xFDDC98) = 0;            // entry count (segment)
+      if (KernelSize > 0xF47C98 + 4) {
+        *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF47C98) = 0;          // entry count (simple)
+      }
     }
 
     //
     // Per-CPU slot table in the timebase continuation (0xBD53DA4): the
     // cpu-count global [0x7EB555C] and the slot-list pointer [0x7EB5578]
     // are 0 in the image (set by the early boot memory setup that never
-    // runs here).  With them 0 the walk takes the w10=-1 path, forms a
-    // tagged garbage address (0xC8A2...) and reads an arbitrary byte.
-    // Point the list at a local slot (0x7EB5560) whose mpidr-low16 = 0
-    // matches the emulated MPIDR_EL1 = 0 and whose timer bit index is 0.
+    // runs here).  The translated loads resolve image addresses with the
+    // simple base offset (KB + va - 0x7004000), so patch both the simple
+    // and the segment-mapped offsets.  Point the list at a local slot
+    // (0x7EB5560) whose mpidr-low16 = 0 matches the emulated MPIDR_EL1 = 0
+    // and whose timer bit index is 0.
     //
-    if (KernelSize > 0xF2155C) {
-      *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF2155C) = 1;                    // cpu count
-      if (KernelSize > 0xF21578 + 8) {
-        *(volatile UINT64 *)((UINTN)KernelBuffer + 0xF21578) = 0xFFFFFE0007EB5560ull; // slot list
+    if (KernelSize > 0xF2755C) {
+      *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF2755C) = 1;                    // cpu count (simple)
+      if (KernelSize > 0xF27578 + 8) {
+        *(volatile UINT64 *)((UINTN)KernelBuffer + 0xF27578) = 0xFFFFFE0007EB5560ull; // slot list (simple)
       }
-      if (KernelSize > 0xF21574) {
-        *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF21560) = 0;                  // slot[0] base
-        *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF21564) = 0;                  // mpidr low16
-        *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF21574) = 0;                  // timer bit index
+      if (KernelSize > 0xF27574) {
+        *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF27560) = 0;                  // slot[0] base (simple)
+        *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF27564) = 0;                  // mpidr low16 (simple)
+        *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF27574) = 0;                  // timer bit index (simple)
+      }
+      if (KernelSize > 0xF2355C) {
+        *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF2355C) = 1;                  // cpu count (segment)
+        if (KernelSize > 0xF23578 + 8) {
+          *(volatile UINT64 *)((UINTN)KernelBuffer + 0xF23578) = 0xFFFFFE0007EB5560ull; // slot list (segment)
+        }
+        if (KernelSize > 0xF23574) {
+          *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF23560) = 0;                // slot[0] base (segment)
+          *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF23564) = 0;                // mpidr low16 (segment)
+          *(volatile UINT32 *)((UINTN)KernelBuffer + 0xF23574) = 0;                // timer bit index (segment)
+        }
       }
     }
     if (Hdr->Signature != MACH_HEADER_64_SIGNATURE) {
