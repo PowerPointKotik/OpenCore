@@ -3317,6 +3317,8 @@ VOID DbtSpyC518580 (VOID) {
   UINT32       Flag, Lo, Hi, Simple;
   UINT64       Mapped;
   UINTN        I;
+  UINT8        B1, B2, B3;
+  UINT32       Ctrl1, Ctrl2;
 
   if (KB == NULL) {
     return;
@@ -3327,9 +3329,7 @@ VOID DbtSpyC518580 (VOID) {
   Hi     = *(volatile UINT32 *)(UINTN)(KB + 0xFDDCC0);   // 0x7F47CC0
 
   //
-  // Resolve 0x7F47C90 the way the translated load does, and report the
-  // resulting host address plus the byte there, to tell apart a segment
-  // mapping problem from a wrong flag value.
+  // Resolve 0x7F47C90 the way the translated load does.
   //
   Mapped = 0;
   if (Ctx != NULL) {
@@ -3345,14 +3345,22 @@ VOID DbtSpyC518580 (VOID) {
   if (Mapped == 0) {
     Mapped = 0xFFFFFE0007F47C90ull;   // identity fallback
   }
+
+  //
+  // Read the flag byte repeatedly and two control words (0x7E287D8 and
+  // 0x7F46C78) to check memory stability at different offsets.
+  //
+  B1 = *(volatile UINT8 *)(UINTN)Mapped;
+  B2 = *(volatile UINT8 *)(UINTN)Mapped;
+  B3 = *(volatile UINT8 *)(UINTN)Mapped;
+  Ctrl1 = *(volatile UINT32 *)(UINTN)(KB + 0xE647D8);   // 0x7E287D8
+  Ctrl2 = *(volatile UINT32 *)(UINTN)(KB + 0xFDC678);   // 0x7F46C78
+
   DEBUG ((DEBUG_INFO,
-          "DBT_SPY: ptovirt(x0=%016llx) segflag=%08x baseflag=%08x lo=%08x hi=%08x map=%016llx byte=%02x kb=%016llx so2=%016llx va2=%016llx n=%u\n",
-          gDbtSpyX0, Flag, Simple, Lo, Hi, Mapped,
-          *(volatile UINT8 *)(UINTN)Mapped,
-          (Ctx != NULL) ? (UINT64)(UINTN)Ctx->KernelBuffer : 0,
-          (Ctx != NULL && Ctx->SegCount > 2) ? Ctx->SegFileOff[2] : 0,
-          (Ctx != NULL && Ctx->SegCount > 2) ? Ctx->SegVmAddr[2] : 0,
-          (Ctx != NULL) ? (UINT32)Ctx->SegCount : 0));
+          "DBT_SPY: ptovirt(x0=%016llx) segflag=%08x baseflag=%08x map=%016llx "
+          "b1=%02x b2=%02x b3=%02x c1=%08x c2=%08x kb=%016llx\n",
+          gDbtSpyX0, Flag, Simple, Mapped, B1, B2, B3, Ctrl1, Ctrl2,
+          (Ctx != NULL) ? (UINT64)(UINTN)Ctx->KernelBuffer : 0));
 }
 
 VOID DbtKernelPutc (VOID) {
