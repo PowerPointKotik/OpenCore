@@ -1200,6 +1200,27 @@ SKIP_READ_APPLE_KERNEL:
     if (KernelFile != NULL) {
       KernelFile->Close (KernelFile);
     }
+
+    //
+    // Re-host the kernel image in low memory.  ReadAppleKernel allocates
+    // with AllocatePool, which lands in the 2.3-2.6 GB PCI-hole area on
+    // this platform where reads are unreliable (observed: two different
+    // values from the same address), corrupting the translated loads.
+    //
+    if (!EFI_ERROR (Status) && KernelBuffer != NULL &&
+        (UINTN)KernelBuffer >= 0x40000000u) {
+      VOID *LowBuf = AllocKernelImageBuffer ((UINTN)AllocatedSize);
+      if (LowBuf != NULL) {
+        CopyMem (LowBuf, KernelBuffer, (UINTN)KernelSize);
+        FreePool (KernelBuffer);
+        KernelBuffer = LowBuf;
+        DEBUG ((DEBUG_INFO, "DirectKernel: re-hosted kernel buffer to 0x%llx\n",
+                (UINT64)(UINTN)LowBuf));
+      } else {
+        DEBUG ((DEBUG_WARN, "DirectKernel: low-memory re-host failed, keeping 0x%llx\n",
+                (UINT64)(UINTN)KernelBuffer));
+      }
+    }
   }
 
   RootDirectory->Close (RootDirectory);
