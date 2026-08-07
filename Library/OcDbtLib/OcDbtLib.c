@@ -3395,6 +3395,30 @@ VOID DbtSpyC518580 (VOID) {
   Ctrl1 = *(volatile UINT32 *)(UINTN)(KB + 0xE647D8);   // 0x7E287D8
   Ctrl2 = *(volatile UINT32 *)(UINTN)(KB + 0xFDC678);   // 0x7F46C78
 
+  //
+  // Raw byte dump at the mapped address and at the identity address, to
+  // tell which memory the translated loads actually hit.
+  //
+  {
+    UINTN  J;
+    UINT8  Dmp[16];
+    UINT8  IdDmp[16];
+    UINT64 Id  = 0xFFFFFE0007F47C90ull;
+    UINTN  IdO = (UINTN)Id;
+
+    for (J = 0; J < 16; J++) {
+      Dmp[J]   = *(volatile UINT8 *)(UINTN)(Mapped + J);
+      IdDmp[J] = *(volatile UINT8 *)(UINTN)(IdO + J);
+    }
+    DEBUG ((DEBUG_INFO,
+            "DBT_SPY: m=%016llx d=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x "
+            "id=%016llx d=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+            Mapped, Dmp[0], Dmp[1], Dmp[2], Dmp[3], Dmp[4], Dmp[5], Dmp[6], Dmp[7],
+            Dmp[8], Dmp[9], Dmp[10], Dmp[11], Dmp[12], Dmp[13], Dmp[14], Dmp[15],
+            Id, IdDmp[0], IdDmp[1], IdDmp[2], IdDmp[3], IdDmp[4], IdDmp[5], IdDmp[6], IdDmp[7],
+            IdDmp[8], IdDmp[9], IdDmp[10], IdDmp[11], IdDmp[12], IdDmp[13], IdDmp[14], IdDmp[15]));
+  }
+
   DEBUG ((DEBUG_INFO,
           "DBT_SPY: ptovirt(x0=%016llx) segflag=%08x baseflag=%08x lo=%08x hi=%08x map=%016llx "
           "b1=%02x b2=%02x b3=%02x c1=%08x c2=%08x kb=%016llx\n",
