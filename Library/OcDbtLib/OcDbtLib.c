@@ -2720,6 +2720,45 @@ if (Opt == 2 || Opt == 6 || Opt == 3) {
           EmitMemAccess(&P, Size, Opc, (Opc == 2), (UINT32)RtOff);
           return (UINTN)(P - X86Buf);
         }
+        //
+        // Atomic read-modify-write: LDADD/LDCLR/LDEOR/LDSET Wt, Ws, [Xn].
+        // bit21=1 with Opt in {0,1,4,5,7}, A (bits 23:22) = 0 ADD, 1 CLR,
+        // 2 EOR, 3 SET.  Rm is the source value (Ws), Rt the return (old).
+        // Emulate as load -> compute -> store (single-threaded here).
+        //
+        if (Opt == 0 || Opt == 1 || Opt == 4 || Opt == 5 || Opt == 7) {
+          UINT32 Ar = (Inst >> 22) & 3;
+          UINT8  Rs = (Inst >> 16) & 0x1F;
+
+          DBG_ASM((DEBUG_INFO, "DBT_ASM:    ATOMIC %s W%d, W%d, [X%d]\n",
+                   Ar == 0 ? "LDADD" : Ar == 1 ? "LDCLR"
+                   : Ar == 2 ? "LDEOR" : "LDSET", Rt, Rs, Rn));
+
+          EmitLoadRcx(&P, RnOffL);              // RCX = [Rn] (guest address)
+          EmitCallMapHelper(&P);                // RAX = host address
+          EmitByte(&P, 0x50);                   // PUSH RAX (host)
+          if (Size == 0) { EmitByte(&P, 0x0F); EmitByte(&P, 0xB6); EmitByte(&P, 0x00); }  // MOVZX EAX, [RAX]
+          else if (Size == 1) { EmitByte(&P, 0x0F); EmitByte(&P, 0xB7); EmitByte(&P, 0x00); }  // MOVZX EAX, [RAX]
+          else if (Size == 2) { EmitByte(&P, 0x8B); EmitByte(&P, 0x00); }  // MOV EAX, [RAX]
+          else { EmitRexW(&P); EmitByte(&P, 0x8B); EmitByte(&P, 0x00); }  // MOV RAX, [RAX]
+          EmitByte(&P, 0x50);                   // PUSH RAX (old value)
+          if (Rs == 31) { EmitMovImm(&P, 0); } else { EmitLoadRcx(&P, ArmRegXOff(Rs)); }
+          if (Size == 0) { EmitByte(&P, 0x89); EmitByte(&P, 0xC9); }  // MOV ECX, ECX (zero-extend)
+          if (Ar == 0) { EmitAddRaxRcx(&P); }                          // ADD
+          else if (Ar == 1) { EmitNotRcx(&P); EmitAndRaxRcx(&P); }     // CLR: old & ~v
+          else if (Ar == 2) { EmitXorRaxRcx(&P); }                     // EOR
+          else { EmitOrRaxRcx(&P); }                                   // SET: old | v
+          if (Size == 0) { EmitTrunc32(&P); }
+          EmitByte(&P, 0x59);                   // POP RCX (old)
+          EmitByte(&P, 0x5A);                   // POP RDX (host)
+          if (Size == 0) { EmitByte(&P, 0x88); EmitByte(&P, 0x0A); }  // MOV [RDX], AL
+          else if (Size == 1) { EmitByte(&P, 0x66); EmitByte(&P, 0x89); EmitByte(&P, 0x0A); }  // MOV [RDX], AX
+          else if (Size == 2) { EmitByte(&P, 0x89); EmitByte(&P, 0x0A); }  // MOV [RDX], EAX
+          else { EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0x0A); }  // MOV [RDX], RAX
+          EmitRexW(&P); EmitByte(&P, 0x89); EmitByte(&P, 0xC8);   // MOV RAX, RCX (old)
+          EmitStoreRax(&P, RtOff);              // Wt = old value
+          return (UINTN)(P - X86Buf);
+        }
         DBG_ASM((DEBUG_INFO, "DBT_ASM:    Reg-offset (opc=%d opt=%d) -> NOP\n", Opc, Opt));
       } else {
         DBG_ASM((DEBUG_INFO, "DBT_ASM:    Reg-offset (opc=%d) -> NOP\n", Opc));
